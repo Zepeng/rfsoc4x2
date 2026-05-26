@@ -82,7 +82,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      /include/ "system-conf.dtsi"
      / {
         chosen {
-                bootargs = " earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rw";
+                bootargs = " earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4";
                 stdout-path = "serial0:115200n8";
         };
      };
@@ -92,6 +92,8 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      };
      
      &spi0 {
+        status = "okay";
+
         lmk@0 {
                 compatible = "ti,lmk04828";
                 reg = <0x0>;
@@ -194,22 +196,44 @@ to create and build the platform component `rfsoc_adc_vitis_platform` in `~/work
      ```shell
      lsblk -r -O
      ```
-     For example, my SD card is `/dev/sdj`.
-   - Follow [these steps](https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18842385/How+to+format+SD+card+for+SD+boot) to create a boot partition (FAT32) and a root partition (EXT4) on `/dev/sdj`.
-   - Write the rootfs to the root (EXT4) partition:
+     For example, my SD card is `/dev/sdj`. In the commands below, replace `/dev/sdX` with the actual SD card device.
+   - Follow [these steps](https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18842385/How+to+format+SD+card+for+SD+boot) to create a boot partition (FAT32) and a root partition (EXT4) on the SD card.
+   - Check that both SD-card partitions exist as block devices before writing anything:
      ```shell
-     sudo dd if=~/workspace/rfsoc-linux/images/linux/rootfs.ext4 of=/dev/sdj2 bs=1M
-     sudo resize2fs /dev/sdj2
+     SD=/dev/sdX
+     lsblk -p -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL ${SD}
+     ls -l ${SD} ${SD}1 ${SD}2
+     test -b ${SD}1 && test -b ${SD}2
      ```
-   - Mount the boot (FAT32) partition:
+     The two partition device nodes must start with `b`, for example `brw-rw----`. If a partition node is missing or is a regular file, unplug and replug the SD-card reader, then check again.
+   - Create a target-friendly EXT4 root partition and copy the PetaLinux rootfs into it. This avoids EXT4 feature mismatches, such as `64bit` and `metadata_csum`, that can prevent the target kernel from mounting the rootfs:
      ```shell
      cd ~/workspace
-     mkdir mnt
-     sudo mount -t vfat /dev/sdj1 mnt
+     mkdir -p /tmp/rootfs_src rootfs-sd
+     sudo umount ${SD}1 ${SD}2 mnt /tmp/rootfs_src rootfs-sd 2>/dev/null || true
+
+     sudo mkfs.ext4 -F -L rootfs -O ^64bit,^metadata_csum ${SD}2
+     sudo mount -o loop,ro ~/workspace/rfsoc-linux/images/linux/rootfs.ext4 /tmp/rootfs_src
+     sudo mount -t ext4 ${SD}2 rootfs-sd
+     findmnt rootfs-sd
+
+     sudo rsync -aH --numeric-ids /tmp/rootfs_src/ rootfs-sd/
+     sync
+     sudo umount rootfs-sd
+     sudo umount /tmp/rootfs_src
+     sudo e2fsck -f -y ${SD}2
+     sudo file -s ${SD}2
+     ```
+     `findmnt rootfs-sd` should show `${SD}2` as the source. The last command should report an `ext4 filesystem` and should not list the `64bit` feature.
+   - Mount the boot (FAT32) partition:
+     ```shell
+     mkdir -p mnt
+     sudo mount -t vfat ${SD}1 mnt
      ```
    - Copy boot files, bit file, and executable to the SD card:
      ```shell
      sudo cp ~/workspace/test_adc/build/hw/package/package/sd_card/* mnt/
+     sync
      sudo umount mnt
      ```
    - Put the SD card into the microSD slot of the RFSoC4x2 board.
@@ -223,21 +247,55 @@ to create and build the platform component `rfsoc_adc_vitis_platform` in `~/work
    - Log in as `root` (default password is `root`, remember to change it after logging in).
      Do `ifconfig` to check the IP address. With the IP address, can also `ssh` in as `root`.
      Petalinux also creates a sudoer with login `petalinux`, whose passwd is set by the user when logging in the first time.
+   - If the board is connected directly to a PC instead of a DHCP network, assign static IP addresses. On the RFSoC board:
+     ```shell
+     ifconfig eth0 192.168.2.2 netmask 255.255.255.0 up
+     ifconfig eth0
+     cat /sys/class/net/eth0/carrier
+     ```
+     The `carrier` value should be `1`. On the PC Ethernet adapter, use a static IPv4 address such as `192.168.2.1` with netmask `255.255.255.0`, leaving gateway and DNS blank. Then connect from the PC:
+     ```shell
+     ping 192.168.2.2
+     ssh root@192.168.2.2
+     ```
 
 4. Configure and turn on the reference clock chips (LMK04828 and LMX2594) via SPI:
-   - `scp` this python package file [`xrfclk-2.0.tar.gz`](src/vitis_adc_platform/xrfclk-2.0.tar.gz) (I hacked out from the [RFSoC-PYNQ distribution](https://github.com/Xilinx/RFSoC-PYNQ/tree/master/boards/RFSoC4x2)) to say `/home/root/` on the RFSoC board.
-   - Install the Python package on the board:
+   - From the host, copy this python package file [`xrfclk-2.0.tar.gz`](src/vitis_adc_platform/xrfclk-2.0.tar.gz) (I hacked out from the [RFSoC-PYNQ distribution](https://github.com/Xilinx/RFSoC-PYNQ/tree/master/boards/RFSoC4x2)) and the clock setup script [`set_ref_clocks.py`](src/vitis_adc_platform/set_ref_clocks.py) to the RFSoC board. Replace `192.168.2.2` with the board IP address:
      ```shell
-     python -m pip install /home/root/xrfclk-2.0.tar.gz
+     scp src/vitis_adc_platform/xrfclk-2.0.tar.gz root@192.168.2.2:/home/root/
+     scp src/vitis_adc_platform/set_ref_clocks.py root@192.168.2.2:/home/root/
      ```
-   - `scp` this python script [`set_ref_clocks.py`](src/vitis_adc_platform/set_ref_clocks.py) to say `/home/root/` and then run it:
+   - On the board, check that the three SPI nodes from the device tree are present:
      ```shell
-     python /home/root/set_ref_clocks.py
+     ls /sys/bus/spi/devices
+     modprobe spidev
      ```
-     to turn on the reference clocks.
+     The expected SPI devices are `spi0.0`, `spi0.1`, and `spi0.2`. The `/dev/spidev*` nodes may not exist yet; the `xrfclk` package binds these SPI devices to `spidev` when it runs.
+   - Install the Python package and run the script on the board:
+     ```shell
+     cd /home/root
+     python3 -m pip install ./xrfclk-2.0.tar.gz
+     python3 ./set_ref_clocks.py
+     ls /dev/spidev*
+     ```
+     The script should create `/dev/spidev0.0`, `/dev/spidev0.1`, and `/dev/spidev0.2` and program the LMK04828 and LMX2594 chips for the ADC reference clocks.
+   - If `/sys/bus/spi/devices` has `spi0.0`, `spi0.1`, and `spi0.2`, but `/dev/spidev*` is still missing, bind the devices manually and rerun the script:
+     ```shell
+     for d in spi0.0 spi0.1 spi0.2; do
+       echo spidev > /sys/bus/spi/devices/$d/driver_override
+       if [ -L /sys/bus/spi/devices/$d/driver ]; then
+         echo $d > /sys/bus/spi/devices/$d/driver/unbind
+       fi
+       echo $d > /sys/bus/spi/drivers/spidev/bind
+     done
+
+     ls /dev/spidev*
+     python3 /home/root/set_ref_clocks.py
+     ```
 5. Run the `test_adc` app to grab samples from the ADC:
    ```shell
    cd /run/media/boot-mmcblk0p1/
+   chmod +x test_adc_host
    ./test_adc_host dummy_kernel.xclbin
    ```
    If the app runs properly, should see the following printout:
@@ -252,6 +310,26 @@ to create and build the platform component `rfsoc_adc_vitis_platform` in `~/work
    Writing data to wave.txt
    ```
    The samples are stored in the file `wave.txt`.
+   Check the captured samples with:
+   ```shell
+   ls -lh wave.txt
+   head wave.txt
+   ```
+   If the program stops at `Reading data from device`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC stream samples. Recheck the reference clock setup above and inspect the XRT logs:
+   ```shell
+   dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
+   dmesg | tail -80
+   ```
+   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 signed 16-bit samples, so streaming at 60 Hz is about 7.9 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
+   ```shell
+   python3 src/vitis_adc_platform/receive_wave_stream.py --mode tcp --bind 0.0.0.0 --port 5000 --plot
+   ```
+   Then run the sender on the board, replacing `192.168.2.1` with the PC Ethernet IP address:
+   ```shell
+   cd /run/media/boot-mmcblk0p1/
+   ./test_adc_host dummy_kernel.xclbin --tcp 192.168.2.1 5000 --rate 60 --frames 0
+   ```
+   Use `--frames 600` instead of `--frames 0` to send ten seconds of data at 60 Hz. UDP is also supported; start the receiver with `--mode udp` and run the board application with `--udp 192.168.2.1 5000`. UDP frames are split into smaller packets and reassembled by the Python receiver.
 
    Here is an example plot of the captured samples when a 2 MHz sinusoid is fed to the ADC-D SMA connector:
    ![2 MHz sinusoid](Figures/sin2M.png)
@@ -272,4 +350,3 @@ to create and build the platform component `rfsoc_adc_vitis_platform` in `~/work
       - In `vitis-comp.json` created for the Vitis platform, the field `supportedFamily` is set to the generic value `fpga`, rather than the value `zynquplusRFSOC` exported by Vivado.
       - The choice **HARDWARE EMULATION->Start Emulator** doesn't show up under the FLOW view. The hardware emulation build still runs fine (need to uncheck the **Do not create image** box in `package.cfg`), but QEMU hangs after it is started from the script file provided.
    - I tried to manually change all instances of `zynquplusRFSOC` to `zynquplus` in the file `xsa.json` in the hardware archives `rfsoc_adc_hardware.xsa` and `rfsoc_adc_hardware_emu.xsa`, and the value of the field `supportedFamily` in `vitis-comp.json` to `zynquplus` in order to trick Vitis into thinking `xczu48dr` was a `zynquplus`. The choice **HARDWARE EMULATION->Start Emulator** showed up under the FLOW view, but QEMU still hung.
-
