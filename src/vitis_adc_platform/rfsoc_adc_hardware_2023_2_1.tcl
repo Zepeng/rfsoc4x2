@@ -36,6 +36,28 @@ proc checkRequiredFiles { origin_dir} {
   set status true
   return $status
 }
+
+# Vivado project-export scripts can contain metadata properties that are not
+# accepted by every patch-level/tool-flow combination. Skip only unsupported
+# set_property -name metadata; keep IP -dict and BD connection errors fatal.
+if {![llength [info commands xil_orig_set_property]]} {
+  rename set_property xil_orig_set_property
+  proc set_property {args} {
+    set rc [catch {uplevel 1 [list xil_orig_set_property {*}$args]} result opts]
+    if {$rc == 0} {
+      return $result
+    }
+
+    set name_index [lsearch -exact $args "-name"]
+    if {$name_index >= 0 && ([string match "*Invalid property*" $result] || [string match "*Property does not exist*" $result])} {
+      set prop_name [lindex $args [expr {$name_index + 1}]]
+      puts "INFO: Skipping unsupported property $prop_name: $result"
+      return
+    }
+
+    return -options $opts $result
+  }
+}
 # Set the reference directory for source file relative paths (by default the value is script directory path)
 set origin_dir "."
 
@@ -146,7 +168,9 @@ set_property -name "default_lib" -value "xil_defaultlib" -objects $obj
 set_property -name "enable_optional_runs_sta" -value "0" -objects $obj
 set_property -name "enable_resource_estimation" -value "0" -objects $obj
 set_property -name "enable_vhdl_2008" -value "1" -objects $obj
-set_property -name "feature_set" -value "FeatureSet_Classic" -objects $obj
+if {[catch {set_property -name "feature_set" -value "FeatureSet_Classic" -objects $obj} feature_set_err]} {
+  puts "INFO: Skipping unsupported project property feature_set: $feature_set_err"
+}
 set_property -name "generate_ip_upgrade_log" -value "1" -objects $obj
 set_property -name "ip.user_files_dir" -value "$proj_dir/${_xil_proj_name_}.ip_user_files" -objects $obj
 set_property -name "ip_cache_permissions" -value "read write" -objects $obj
@@ -157,7 +181,7 @@ set_property -name "local_ip_repo_leaf_dir_name" -value "ip_repo" -objects $obj
 set_property -name "mem.enable_memory_map_generation" -value "1" -objects $obj
 set_property -name "platform.board_id" -value "rfsoc4x2" -objects $obj
 set_property -name "platform.default_output_type" -value "sd_card" -objects $obj
-set_property -name "platform.description" -value "A hardware emulation platform with 1 ADC @ 2.4576Gsps for the RFSoC4x2 board" -objects $obj
+set_property -name "platform.description" -value "RFSoC4x2 platform with ADC data and trigger streams at 614.4 MS/s" -objects $obj
 set_property -name "platform.design_intent.datacenter" -value "false" -objects $obj
 set_property -name "platform.design_intent.embedded" -value "true" -objects $obj
 set_property -name "platform.design_intent.external_host" -value "false" -objects $obj
@@ -431,6 +455,7 @@ proc cr_bd_system { parentCell } {
    ] $adc0_clk
 
   set vin0_01 [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vin0_01 ]
+  set vin0_23 [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vin0_23 ]
 
 
   # Create ports
@@ -1507,17 +1532,22 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   set usp_rf_data_converter_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:usp_rf_data_converter:2.6 usp_rf_data_converter_0 ]
   set_property -dict [list \
     CONFIG.ADC0_Multi_Tile_Sync {false} \
-    CONFIG.ADC0_Outclk_Freq {307.200} \
+    CONFIG.ADC0_Outclk_Freq {76.800} \
     CONFIG.ADC0_PLL_Enable {true} \
     CONFIG.ADC0_Refclk_Div {1} \
     CONFIG.ADC0_Refclk_Freq {491.520} \
     CONFIG.ADC0_Sampling_Rate {4.9152} \
     CONFIG.ADC_Data_Type00 {0} \
+    CONFIG.ADC_Data_Type02 {0} \
     CONFIG.ADC_Data_Width00 {8} \
-    CONFIG.ADC_Decimation_Mode00 {2} \
+    CONFIG.ADC_Data_Width02 {8} \
+    CONFIG.ADC_Decimation_Mode00 {8} \
+    CONFIG.ADC_Decimation_Mode02 {8} \
     CONFIG.ADC_Dither00 {true} \
+    CONFIG.ADC_Dither02 {true} \
     CONFIG.ADC_OBS00 {false} \
     CONFIG.ADC_Slice00_Enable {true} \
+    CONFIG.ADC_Slice02_Enable {true} \
     CONFIG.ADC_Slice10_Enable {false} \
     CONFIG.ADC_TDD_RTS00 {0} \
     CONFIG.Axiclk_Freq {200} \
@@ -1543,6 +1573,7 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   connect_bd_intf_net -intf_net ps8_0_axi_periph_M01_AXI [get_bd_intf_pins ps8_0_axi_periph/M01_AXI] [get_bd_intf_pins usp_rf_data_converter_0/s_axi]
   connect_bd_intf_net -intf_net sysref_in_1 [get_bd_intf_ports sysref_in] [get_bd_intf_pins usp_rf_data_converter_0/sysref_in]
   connect_bd_intf_net -intf_net vin0_01_1 [get_bd_intf_ports vin0_01] [get_bd_intf_pins usp_rf_data_converter_0/vin0_01]
+  connect_bd_intf_net -intf_net vin0_23_1 [get_bd_intf_ports vin0_23] [get_bd_intf_pins usp_rf_data_converter_0/vin0_23]
   connect_bd_intf_net -intf_net zynq_ultra_ps_e_0_M_AXI_HPM0_LPD [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] [get_bd_intf_pins ps8_0_axi_periph/S00_AXI]
 
   # Create port connections
@@ -1573,6 +1604,7 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
 preplace port sysref_in -pg 1 -lvl 0 -x 0 -y 720 -defaultsOSRD
 preplace port adc0_clk -pg 1 -lvl 0 -x 0 -y 680 -defaultsOSRD
 preplace port vin0_01 -pg 1 -lvl 0 -x 0 -y 700 -defaultsOSRD
+preplace port vin0_23 -pg 1 -lvl 0 -x 0 -y 740 -defaultsOSRD
 preplace inst zynq_ultra_ps_e_0 -pg 1 -lvl 1 -x 340 -y 420 -defaultsOSRD
 preplace inst clk_wiz_0 -pg 1 -lvl 2 -x 840 -y 80 -defaultsOSRD
 preplace inst proc_sys_reset_clk_out200M -pg 1 -lvl 3 -x 1220 -y 320 -defaultsOSRD
@@ -1598,6 +1630,7 @@ preplace netloc ps8_0_axi_periph_M00_AXI 1 2 1 N 460
 preplace netloc ps8_0_axi_periph_M01_AXI 1 2 1 990 480n
 preplace netloc sysref_in_1 1 0 3 NJ 720 NJ 720 NJ
 preplace netloc vin0_01_1 1 0 3 NJ 700 NJ 700 NJ
+preplace netloc vin0_23_1 1 0 3 NJ 740 NJ 740 NJ
 preplace netloc zynq_ultra_ps_e_0_M_AXI_HPM0_LPD 1 1 1 N 390
 levelinfo -pg 1 0 340 840 1220 1600 1800
 pagesize -pg 1 -db -bbox -sgen -120 0 1800 1000
@@ -1613,7 +1646,7 @@ pagesize -pg 1 -db -bbox -sgen -120 0 1800 1000
   set_property PFM.CLOCK {clk_out1 {id "1" is_default "true" proc_sys_reset "/proc_sys_reset_clk_out200M" status "fixed" freq_hz "200000000"} clk_out2 {id "2" is_default "false" proc_sys_reset "/proc_sys_reset_clk_out400M" status "fixed" freq_hz "400000000"}} [get_bd_cells /clk_wiz_0]
   set_property PFM.IRQ {intr { id 0 range 32 }} [get_bd_cells /axi_intc_0]
   set_property PFM.AXI_PORT {M02_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M03_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M04_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M05_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M06_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M07_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M08_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M09_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M10_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M11_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M12_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M13_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M14_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M15_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M16_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M17_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"}} [get_bd_cells /ps8_0_axi_periph]
-  set_property PFM.AXIS_PORT {m00_axis {type "M_AXIS" sptag "RFDC_AXIS" is_range "false"}} [get_bd_cells /usp_rf_data_converter_0]
+  set_property PFM.AXIS_PORT {m00_axis {type "M_AXIS" sptag "RFDC_DATA_AXIS" is_range "false"} m02_axis {type "M_AXIS" sptag "RFDC_TRIG_AXIS" is_range "false"}} [get_bd_cells /usp_rf_data_converter_0]
 
 
   validate_bd_design

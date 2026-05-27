@@ -21,22 +21,29 @@
 
 #include "ap_int.h"
 #include "ap_axi_sdata.h"
+#include "hls_stream.h"
 
 #define DATA_WIDTH 128
 
 typedef ap_axis<DATA_WIDTH, 0, 0, 0> pkt;
 
 extern "C" {
-void dummy_kernel(ap_uint<DATA_WIDTH>* buffer0, hls::stream<pkt> &s_in, unsigned int size) {
+void dummy_kernel(ap_uint<DATA_WIDTH>* buffer0,
+                  hls::stream<pkt>& data_in,
+                  hls::stream<pkt>& trigger_in,
+                  unsigned int size) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
-#pragma HLS INTERFACE axis port = s_in
+#pragma HLS INTERFACE axis port = data_in
+#pragma HLS INTERFACE axis port = trigger_in
 
 // Auto-pipeline is going to apply pipeline to this loop
 dummy:
     for (unsigned int i = 0; i < size; i++) {
 #pragma HLS PIPELINE II = 1
-        pkt value = s_in.read();
-        buffer0[i] = value.data;
+        pkt data_value = data_in.read();
+        pkt trigger_value = trigger_in.read();
+        (void)trigger_value;
+        buffer0[i] = data_value.data;
     }
 }
 }

@@ -47,7 +47,7 @@ typedef ap_uint<DATA_WIDTH> data_t;
 
 static const size_t SAMPLES_PER_WORD = DATA_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
-static const double DEFAULT_SAMPLE_RATE_HZ = 2.4576e9;
+static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
 static const double DEFAULT_FRAME_RATE_HZ = 60.0;
 
 enum class StreamMode {
@@ -81,7 +81,7 @@ static void usage(const char* argv0)
         << "  --frames <N>         Number of frames to send. Use 0 to stream until stopped.\n"
         << "                       Default: 1 without networking, 0 with networking.\n"
         << "  --sample-rate <Hz>   ADC sample rate written into frame headers.\n"
-        << "                       Default: 2.4576e9\n"
+        << "                       Default: 614.4e6\n"
         << "  --wave <file>        Also save captured samples as text. In streaming\n"
         << "                       mode this file is overwritten each frame.\n"
         << "  --no-wave            Do not write wave.txt in one-shot mode.\n"
@@ -432,7 +432,7 @@ int main(int argc, char** argv)
 
     unsigned int size = DATA_SIZE;
     OCL_CHECK(err, err = krnl.setArg(0, buffer));
-    OCL_CHECK(err, err = krnl.setArg(2, size));
+    OCL_CHECK(err, err = krnl.setArg(3, size));
 
     int socket_fd = -1;
     if (options.stream_mode != StreamMode::NONE) {
