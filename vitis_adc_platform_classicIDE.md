@@ -1,7 +1,7 @@
 # A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2 (Vitis 2023.1 Classic IDE)
 This is my second experiment with the RFSoC4x2 board. The goal is to build a simple Vitis extensible platform that supports pulling samples from one ADC stream of the ZU48DR device on board, while exporting a second ADC stream that can be used by PL trigger logic.
 
-The current HLS kernel is a connectivity baseline: it writes the data stream to memory and consumes the trigger stream in lockstep so the Vitis-generated design has both RFDC streams connected. Actual threshold/window trigger logic can be added after this two-stream build is proven.
+The current HLS kernel is a connectivity baseline: it reads the data and trigger streams in lockstep and writes both channels to memory so the Vitis-generated design has both RFDC streams connected. Actual threshold/window trigger logic can be added after this two-stream build is proven.
 
 ## Step 0: Install the RFSoC4x2 board files
 If not already installed, follow [Steps 0.1 and 0.2 in the previous experiment](./vitis_base_platform.md#step-0-install-the-rfsoc4x2-board-files-and-xilinxs-repos) to install the RFSoC board files. There is no need to install the Xilinx's device tree repo and the ZYNQMP common image here. We will use [Petalinux](https://www.xilinx.com/products/design-tools/embedded-software/petalinux-sdk.html#tools) to generate a new image and a device tree. 
@@ -17,9 +17,9 @@ If not already installed, follow [Steps 0.1 and 0.2 in the previous experiment](
    which adds an [RF Data Converter](https://www.xilinx.com/products/intellectual-property/rf-data-converter.html#overview) IP to a slightly modified version of the hardware design in [Vitis Platform Creation Tutorial for
 ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platform_Creation/Design_Tutorials/02-Edge-AI-ZCU104/step1.md).
    - The Vivado project is named `rfsoc_adc_hardware`.
-   - ADC-D (ADC0 on tile 224) on the RFSoC4x2 board is enabled with sampling rate set to 4.9152 GSps and decimation set to 8, giving 614.4 MS/s on each exported ADC stream.
-   - A second ADC slice is enabled and exported through the RFDC `m02_axis` port for use as a trigger stream.
-   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis` and `RFDC_TRIG_AXIS` for `m02_axis`.
+   - The RFDC follows the RFSoC-PYNQ base-design pattern for real ADC streams: ADC tiles 0 and 2 are enabled with sampling rate set to 4.9152 GSps and decimation set to 2, giving 2.4576 GS/s on each exported real AXI4-Stream.
+   - `m00_axis` and `m02_axis` are exported for the two-stream dummy kernel. `m20_axis` and `m22_axis` are also exported as platform streams for later tile-2 checks.
+   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, and `RFDC_ADC_A_AXIS` for `m22_axis`.
 
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
    ```bash
@@ -30,7 +30,9 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    ```
    PFM m00_axis sptag = RFDC_DATA_AXIS
    PFM m02_axis sptag = RFDC_TRIG_AXIS
-   CHECK PASSED: ADC slice 02, vin0_23, and exported RFDC streams are present
+   PFM m20_axis sptag = RFDC_ADC_B_AXIS
+   PFM m22_axis sptag = RFDC_ADC_A_AXIS
+   CHECK PASSED: tile 0/tile 2 real ADC streams and exported RFDC tags are present
    ```
    This check does not require synthesis or implementation.
 
@@ -236,8 +238,10 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      - `buffer0`: output buffer in DDR.
      - `data_in`: main ADC stream connected to `RFDC_DATA_AXIS`.
      - `trigger_in`: trigger ADC stream connected to `RFDC_TRIG_AXIS`.
-     - `size`: number of 128-bit words to capture.
+     - `size`: number of 128-bit AXI4-Stream words to capture from each stream.
+     - `output_words`: number of packed 256-bit output words available in `buffer0`.
      The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index.
+     The kernel writes one packed 256-bit DDR word per loop so it can run at `II=1`.
 
 3. Configure the hardware link for the two RFDC streams:
    - Open `test_adc_system_hw_link/test_adc_system_hw_link.prj` from the **<em>Explorer</em>**.
@@ -287,6 +291,23 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      --connectivity.stream_connect RFDC_DATA_AXIS:dummy_kernel_1.data_in
      --connectivity.stream_connect RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
      ```
+   - The files to deploy after a Vitis build are generated under:
+     ```shell
+     ~/workspace/test_adc_system/Hardware/package/sd_card/
+     ```
+     For a host or kernel change, keep the executable and xclbin as a matched pair and update both files on the SD-card boot partition:
+     ```shell
+     test_adc
+     dummy_kernel.xclbin
+     ```
+     If the platform, boot files, device tree, or PetaLinux image changed, also update the boot files from the same `sd_card` directory:
+     ```shell
+     BOOT.BIN
+     Image
+     system.dtb
+     boot.scr
+     ```
+     Do not replace the EXT4 rootfs partition for a normal Vitis-only host/kernel rebuild.
    - The following block design is generated by Vitis:
      ![vitis_generated_hardware design](Figures/vitis_generated_block_design.png)
 
@@ -335,12 +356,13 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      sync
      sudo umount mnt
      ```
-     If reusing an SD card image that already boots and has XRT working, it is enough to replace the two updated application files on the FAT32 boot partition:
+     If reusing an SD card image that already boots and has XRT working, it is enough to replace the two updated application files on the FAT32 boot partition. Always copy `test_adc` and `dummy_kernel.xclbin` together from the same build:
      ```shell
      sudo cp ~/workspace/test_adc_system/Hardware/package/sd_card/test_adc mnt/
      sudo cp ~/workspace/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin mnt/
      sync
      ```
+     If the platform, device tree, kernel image, or boot files changed, copy the full `sd_card` directory instead of only the two application files.
    - Put the SD card into the microSD slot of the RFSoC4x2 board.
      Use a USB cable to connect the Linux host to the JTAG/UART port on the RFSoC4x2 board.
      Also connect the Ethernet port to a DHCP server if available.
@@ -348,6 +370,21 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      ```shell
      sudo picocom -b 115200 /dev/ttyUSB1
      ```
+   - If boot stops with:
+     ```text
+     Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+     ```
+     first check that the SD card has a valid EXT4 rootfs on partition 2. To test or temporarily fix boot arguments without rebuilding the device tree, interrupt U-Boot during its countdown and run:
+     ```shell
+     setenv bootargs 'earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4'
+     printenv bootargs
+     run bootcmd
+     ```
+     This U-Boot change is temporary unless `saveenv` is supported and intentionally used. A persistent no-rebuild option is to place `uEnv.txt` on the FAT32 boot partition with:
+     ```text
+     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
+     ```
+     The generated `boot.scr` imports `uEnv.txt` before loading the kernel. If the same panic remains after setting these boot arguments, recreate the EXT4 rootfs partition using the commands above.
      Boot up the RFSoC4x2 board.
    - Log in as `root` (default password is `root`, remember to change it after logging in).
      Do `ifconfig` to check the IP address. With the IP address, can also `ssh` in as `root`.
@@ -422,7 +459,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    tail wave.txt
    grep -v '^0$' wave.txt | head
    ```
-   This build validates the two-stream plumbing, but it does not implement triggered capture yet. The kernel consumes `trigger_in` so the RFDC trigger stream does not back up, but it discards those samples. `wave.txt` and the Ethernet stream contain only `data_in`.
+   This build validates the two-stream plumbing, but it does not implement triggered capture yet. The kernel reads `data_in` and `trigger_in` in lockstep and writes both to memory. `wave.txt` and the Ethernet stream contain two columns/channels: `RFDC_DATA_AXIS` followed by `RFDC_TRIG_AXIS`.
 
    If the program stops after `Capturing frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC stream samples. Because this kernel reads both `data_in` and `trigger_in`, both RFDC streams must be running. Recheck the reference clock setup above and inspect the XRT logs:
    ```shell
@@ -430,7 +467,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    dmesg | tail -80
    ```
    If the program completes but `wave.txt` contains only zeros, the Vitis path is working but the data ADC input is likely seeing no signal or an RFDC/clock setup issue. Confirm the reference clocks were programmed and that the analog signal is connected to the data ADC input mapped to `RFDC_DATA_AXIS`.
-   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 signed 16-bit samples. At 614.4 MS/s, each frame spans about 106.67 us; streaming at 60 Hz is about 7.9 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
+   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 two-channel sample pairs. At 2.4576 GS/s, each frame spans about 26.67 us; streaming at 60 Hz is about 15.7 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
    ```shell
    python3 src/vitis_adc_platform/receive_wave_stream.py --mode tcp --bind 0.0.0.0 --port 5000 --plot
    ```
@@ -439,7 +476,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    cd /run/media/boot-mmcblk0p1/
    ./test_adc dummy_kernel.xclbin --tcp 192.168.2.1 5000 --rate 60 --frames 0
    ```
-   Use `--frames 600` instead of `--frames 0` to send ten seconds of data at 60 Hz. UDP is also supported; start the receiver with `--mode udp` and run the board application with `--udp 192.168.2.1 5000`. UDP frames are split into smaller packets and reassembled by the Python receiver. The PC stream contains only the data channel; the trigger-channel waveform is not streamed in this connectivity-baseline build.
+   Use `--frames 600` instead of `--frames 0` to send ten seconds of data at 60 Hz. UDP is also supported; start the receiver with `--mode udp` and run the board application with `--udp 192.168.2.1 5000`. UDP frames are split into smaller packets and reassembled by the Python receiver. The PC stream contains both `RFDC_DATA_AXIS` and `RFDC_TRIG_AXIS`.
 
    Here is an example plot of the captured samples when a 2 MHz sinusoid is fed to the ADC-D SMA connector:
    ![2 MHz sinusoid](Figures/sin2M.png) 

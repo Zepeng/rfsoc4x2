@@ -11,8 +11,10 @@ import numpy as np
 
 TCP_HEADER = struct.Struct(">4sHHQQII")
 UDP_HEADER = struct.Struct(">4sHHQQIHHII")
-TCP_MAGIC = b"RFT1"
-UDP_MAGIC = b"RFU1"
+TCP_MAGIC_V1 = b"RFT1"
+TCP_MAGIC_V2 = b"RFT2"
+UDP_MAGIC_V1 = b"RFU1"
+UDP_MAGIC_V2 = b"RFU2"
 
 
 def parse_args():
@@ -83,17 +85,44 @@ def recv_exact(sock, size):
     return b"".join(chunks)
 
 
-def payload_to_samples(payload):
-    return np.frombuffer(payload, dtype="<i2").copy()
+def channel_count_from_header(magic, version, mode):
+    if mode == "tcp":
+        if magic == TCP_MAGIC_V1 and version == 1:
+            return 1
+        if magic == TCP_MAGIC_V2 and version == 2:
+            return 2
+    else:
+        if magic == UDP_MAGIC_V1 and version == 1:
+            return 1
+        if magic == UDP_MAGIC_V2 and version == 2:
+            return 2
+    return 0
+
+
+def payload_to_samples(payload, channel_count):
+    samples = np.frombuffer(payload, dtype="<i2").copy()
+    if channel_count == 2:
+        return samples.reshape((-1, 2))
+    return samples
 
 
 def print_frame(frame_id, sample_rate_hz, samples, start_time):
     elapsed = time.monotonic() - start_time
-    print(
-        f"frame={frame_id} samples={samples.size} "
-        f"sample_rate={sample_rate_hz}Hz elapsed={elapsed:.3f}s "
-        f"min={samples.min()} max={samples.max()} mean={samples.mean():.2f}"
-    )
+    if samples.ndim == 2:
+        data = samples[:, 0]
+        trigger = samples[:, 1]
+        print(
+            f"frame={frame_id} samples={samples.shape[0]} channels=2 "
+            f"sample_rate={sample_rate_hz}Hz elapsed={elapsed:.3f}s "
+            f"data_min={data.min()} data_max={data.max()} data_mean={data.mean():.2f} "
+            f"trig_min={trigger.min()} trig_max={trigger.max()} trig_mean={trigger.mean():.2f}"
+        )
+    else:
+        print(
+            f"frame={frame_id} samples={samples.size} channels=1 "
+            f"sample_rate={sample_rate_hz}Hz elapsed={elapsed:.3f}s "
+            f"min={samples.min()} max={samples.max()} mean={samples.mean():.2f}"
+        )
 
 
 def save_frame(args, frame_id, samples):
@@ -117,22 +146,42 @@ class LivePlot:
         self.plt = plt
         self.plot_count = plot_count
         self.fig, self.ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
-        self.line, = self.ax.plot([], [], linewidth=1.0)
+        self.lines = [
+            self.ax.plot([], [], linewidth=1.0, label="RFDC_DATA_AXIS")[0],
+            self.ax.plot([], [], linewidth=1.0, label="RFDC_TRIG_AXIS")[0],
+        ]
         self.ax.set_xlabel("Sample index")
         self.ax.set_ylabel("Amplitude (signed 16-bit)")
         self.ax.grid(True, alpha=0.3)
+        self.ax.legend(loc="upper right")
         plt.ion()
         plt.show(block=False)
 
     def update(self, frame_id, samples):
-        count = samples.size if self.plot_count == 0 else min(self.plot_count, samples.size)
-        y = samples[:count]
+        total = samples.shape[0] if samples.ndim == 2 else samples.size
+        count = total if self.plot_count == 0 else min(self.plot_count, total)
         x = np.arange(count)
-        self.line.set_data(x, y)
+        if samples.ndim == 2:
+            y_values = [samples[:count, 0], samples[:count, 1]]
+        else:
+            y_values = [samples[:count], np.array([], dtype=samples.dtype)]
+
+        visible = []
+        for line, y in zip(self.lines, y_values):
+            line.set_data(x[:y.size], y)
+            line.set_visible(y.size != 0)
+            if y.size:
+                visible.append(y)
+
         self.ax.set_title(f"ADC frame {frame_id}")
         self.ax.set_xlim(0, max(1, count - 1))
-        ymin = int(y.min()) if y.size else -1
-        ymax = int(y.max()) if y.size else 1
+        if visible:
+            all_y = np.concatenate(visible)
+            ymin = int(all_y.min())
+            ymax = int(all_y.max())
+        else:
+            ymin = -1
+            ymax = 1
         if ymin == ymax:
             ymin -= 1
             ymax += 1
@@ -142,8 +191,8 @@ class LivePlot:
         self.plt.pause(0.001)
 
 
-def handle_frame(args, plotter, frame_id, sample_rate_hz, payload, start_time):
-    samples = payload_to_samples(payload)
+def handle_frame(args, plotter, frame_id, sample_rate_hz, payload, channel_count, start_time):
+    samples = payload_to_samples(payload, channel_count)
     print_frame(frame_id, sample_rate_hz, samples, start_time)
     save_frame(args, frame_id, samples)
     if plotter:
@@ -165,13 +214,14 @@ def receive_tcp(args, plotter):
             while args.frames == 0 or received < args.frames:
                 header = recv_exact(conn, TCP_HEADER.size)
                 magic, version, header_size, frame_id, sample_rate_hz, sample_count, payload_bytes = TCP_HEADER.unpack(header)
-                if magic != TCP_MAGIC or version != 1 or header_size != TCP_HEADER.size:
+                channel_count = channel_count_from_header(magic, version, "tcp")
+                if channel_count == 0 or header_size != TCP_HEADER.size:
                     raise RuntimeError("invalid TCP frame header")
-                expected_bytes = sample_count * np.dtype("<i2").itemsize
+                expected_bytes = sample_count * channel_count * np.dtype("<i2").itemsize
                 if payload_bytes != expected_bytes:
                     raise RuntimeError("TCP payload size does not match sample count")
                 payload = recv_exact(conn, payload_bytes)
-                handle_frame(args, plotter, frame_id, sample_rate_hz, payload, start_time)
+                handle_frame(args, plotter, frame_id, sample_rate_hz, payload, channel_count, start_time)
                 received += 1
 
 
@@ -190,7 +240,8 @@ def receive_udp(args, plotter):
 
             fields = UDP_HEADER.unpack(packet[:UDP_HEADER.size])
             magic, version, header_size, frame_id, sample_rate_hz, sample_count, chunk_index, chunk_count, payload_offset, chunk_bytes = fields
-            if magic != UDP_MAGIC or version != 1 or header_size != UDP_HEADER.size:
+            channel_count = channel_count_from_header(magic, version, "udp")
+            if channel_count == 0 or header_size != UDP_HEADER.size:
                 continue
             payload = packet[UDP_HEADER.size:]
             if len(payload) != chunk_bytes:
@@ -201,6 +252,7 @@ def receive_udp(args, plotter):
                 frame = {
                     "sample_rate_hz": sample_rate_hz,
                     "sample_count": sample_count,
+                    "channel_count": channel_count,
                     "chunks": [None] * chunk_count,
                     "received": 0,
                     "first_seen": time.monotonic(),
@@ -215,9 +267,19 @@ def receive_udp(args, plotter):
 
             if frame["received"] == len(frame["chunks"]):
                 assembled = b"".join(frame["chunks"])
-                expected_bytes = frame["sample_count"] * np.dtype("<i2").itemsize
+                expected_bytes = (
+                    frame["sample_count"] * frame["channel_count"] * np.dtype("<i2").itemsize
+                )
                 if len(assembled) == expected_bytes:
-                    handle_frame(args, plotter, frame_id, frame["sample_rate_hz"], assembled, start_time)
+                    handle_frame(
+                        args,
+                        plotter,
+                        frame_id,
+                        frame["sample_rate_hz"],
+                        assembled,
+                        frame["channel_count"],
+                        start_time,
+                    )
                     received += 1
                 del pending[frame_id]
 

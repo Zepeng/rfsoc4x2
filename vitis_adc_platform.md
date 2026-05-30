@@ -1,7 +1,7 @@
 # A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2 (Vitis 2023.2.1 Unified IDE)
 This is an attempt to migrate [A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2](./vitis_adc_platform_classicIDE.md) to the Vitis 2023.2 Unified IDE. Steps 0 to 2 are mostly the same as those before.
 
-The current HLS kernel is a two-stream connectivity baseline: it writes the data stream to memory and consumes the trigger stream in lockstep. Actual threshold/window trigger logic can be added after this Vitis build is proven.
+The current HLS kernel is a two-stream connectivity baseline: it reads the data and trigger streams in lockstep and writes both channels to memory. Actual threshold/window trigger logic can be added after this Vitis build is proven.
 
 
 ## Step 0: Install the RFSoC4x2 board files
@@ -29,9 +29,9 @@ If not already installed, do the following steps to install the RFSoC board file
    which adds an [RF Data Converter](https://www.xilinx.com/products/intellectual-property/rf-data-converter.html#overview) IP to a slightly modified version of the hardware design in [Vitis Platform Creation Tutorial for
 ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platform_Creation/Design_Tutorials/02-Edge-AI-ZCU104/step1.md).
    - The Vivado project is named `rfsoc_adc_hardware`.
-   - ADC-D (ADC0 on tile 224) on the RFSoC4x2 board is enabled with sampling rate set to 4.9152 GSps and decimation set to 8, giving 614.4 MS/s on each exported ADC stream.
-   - A second ADC slice is enabled and exported through the RFDC `m02_axis` port for use as a trigger stream.
-   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis` and `RFDC_TRIG_AXIS` for `m02_axis`.
+   - The RFDC follows the RFSoC-PYNQ base-design pattern for real ADC streams: ADC tiles 0 and 2 are enabled with sampling rate set to 4.9152 GSps and decimation set to 2, giving 2.4576 GS/s on each exported real AXI4-Stream.
+   - `m00_axis` and `m02_axis` are exported for the two-stream dummy kernel. `m20_axis` and `m22_axis` are also exported as platform streams for later tile-2 checks.
+   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, and `RFDC_ADC_A_AXIS` for `m22_axis`.
 
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
    ```bash
@@ -42,7 +42,9 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    ```
    PFM m00_axis sptag = RFDC_DATA_AXIS
    PFM m02_axis sptag = RFDC_TRIG_AXIS
-   CHECK PASSED: ADC slice 02, vin0_23, and exported RFDC streams are present
+   PFM m20_axis sptag = RFDC_ADC_B_AXIS
+   PFM m22_axis sptag = RFDC_ADC_A_AXIS
+   CHECK PASSED: tile 0/tile 2 real ADC streams and exported RFDC tags are present
    ```
    This check does not require synthesis or implementation.
 
@@ -196,7 +198,8 @@ If you previously built the single-stream version of this platform, create a fre
    - Modify sources:
      - Under the WORKSPACE view, replace the template file `dummy_kernel.cpp` in **test_adc_dummy_kernel [HLS]->Sources** with this [`dummy_kernel.cpp`](src/vitis_adc_platform/dummy_kernel.cpp).
      - Replace the template file `host.cpp` in **test_adc_host [Application]->Sources->src** with this [`host.cpp`](src/vitis_adc_platform/host.cpp).
-     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, and `size`. The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index.
+     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, `size`, and `output_words`. The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index.
+     - The kernel reads one 128-bit word from each stream per loop and packs them into one 256-bit DDR word so the loop can run at `II=1`.
    - Specify `v++` linker connectivity:
      - Under the WORKSPACE view, open the configuration file `dummy_kernel-link.cfg` in **test_adc [rfsoc_adc_vitis_platform]->Sources->hw_link**
      - Click the **</>** button to show the config source text and add the following lines to the file: 
@@ -345,7 +348,7 @@ If you previously built the single-stream version of this platform, create a fre
    dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
    dmesg | tail -80
    ```
-   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 signed 16-bit samples, so streaming at 60 Hz is about 7.9 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
+   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 two-channel sample pairs, so streaming at 60 Hz is about 15.7 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
    ```shell
    python3 src/vitis_adc_platform/receive_wave_stream.py --mode tcp --bind 0.0.0.0 --port 5000 --plot
    ```

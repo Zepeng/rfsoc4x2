@@ -10,7 +10,7 @@ import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot one-sample-per-line ADC data from wave.txt."
+        description="Plot ADC samples captured by test_adc."
     )
     parser.add_argument(
         "wave_file",
@@ -21,8 +21,14 @@ def parse_args():
     parser.add_argument(
         "--sample-rate",
         type=float,
-        default=2.4576e9,
-        help="Sample rate in samples/second. Default: 2.4576e9",
+        default=2457.6e6,
+        help="Sample rate in samples/second. Default: 2457.6e6",
+    )
+    parser.add_argument(
+        "--channel",
+        choices=("data", "trigger", "both"),
+        default="both",
+        help="Channel to plot for two-column files. Default: both",
     )
     parser.add_argument(
         "--start",
@@ -59,14 +65,19 @@ def load_wave(path):
     return np.atleast_1d(samples)
 
 
+def sample_count(samples):
+    return samples.shape[0] if samples.ndim == 2 else samples.size
+
+
 def select_window(samples, start, count):
     if start < 0:
         raise ValueError("--start must be non-negative")
     if count < 0:
         raise ValueError("--count must be non-negative")
-    if start >= samples.size:
-        raise ValueError(f"--start {start} is past the end of {samples.size} samples")
-    stop = samples.size if count == 0 else min(samples.size, start + count)
+    total = sample_count(samples)
+    if start >= total:
+        raise ValueError(f"--start {start} is past the end of {total} samples")
+    stop = total if count == 0 else min(total, start + count)
     return samples[start:stop], start, stop
 
 
@@ -77,33 +88,50 @@ def make_time_axis(start, stop, sample_rate):
     return sample_numbers, "Sample index"
 
 
-def plot_time_domain(ax, samples, start, stop, sample_rate):
+def selected_series(samples, channel):
+    if samples.ndim == 1:
+        return [("ADC", samples)]
+    if channel == "data":
+        return [("RFDC_DATA_AXIS", samples[:, 0])]
+    if channel == "trigger":
+        return [("RFDC_TRIG_AXIS", samples[:, 1])]
+    return [("RFDC_DATA_AXIS", samples[:, 0]), ("RFDC_TRIG_AXIS", samples[:, 1])]
+
+
+def plot_time_domain(ax, samples, start, stop, sample_rate, channel):
     x, xlabel = make_time_axis(start, stop, sample_rate)
-    ax.plot(x, samples, linewidth=1.0)
+    for label, values in selected_series(samples, channel):
+        ax.plot(x, values, linewidth=1.0, label=label)
     ax.set_title(f"ADC samples [{start}:{stop}]")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Amplitude (signed 16-bit)")
     ax.grid(True, alpha=0.3)
+    if samples.ndim == 2:
+        ax.legend(loc="upper right")
 
 
-def plot_fft(ax, samples, sample_rate):
-    window = np.hanning(samples.size)
-    centered = samples.astype(np.float64) - np.mean(samples)
-    spectrum = np.fft.rfft(centered * window)
-    magnitude_db = 20.0 * np.log10(np.maximum(np.abs(spectrum), 1e-12))
-
+def plot_fft(ax, samples, sample_rate, channel):
+    count = sample_count(samples)
     if sample_rate > 0:
-        freq = np.fft.rfftfreq(samples.size, d=1.0 / sample_rate) / 1e6
+        freq = np.fft.rfftfreq(count, d=1.0 / sample_rate) / 1e6
         xlabel = "Frequency (MHz)"
     else:
-        freq = np.fft.rfftfreq(samples.size)
+        freq = np.fft.rfftfreq(count)
         xlabel = "Normalized frequency (cycles/sample)"
 
-    ax.plot(freq, magnitude_db, linewidth=1.0)
+    for label, values in selected_series(samples, channel):
+        window = np.hanning(values.size)
+        centered = values.astype(np.float64) - np.mean(values)
+        spectrum = np.fft.rfft(centered * window)
+        magnitude_db = 20.0 * np.log10(np.maximum(np.abs(spectrum), 1e-12))
+        ax.plot(freq, magnitude_db, linewidth=1.0, label=label)
+
     ax.set_title("FFT magnitude")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Magnitude (dB)")
     ax.grid(True, alpha=0.3)
+    if samples.ndim == 2:
+        ax.legend(loc="upper right")
 
 
 def main():
@@ -116,9 +144,9 @@ def main():
     if rows == 1:
         axes = [axes]
 
-    plot_time_domain(axes[0], window, start, stop, args.sample_rate)
+    plot_time_domain(axes[0], window, start, stop, args.sample_rate, args.channel)
     if args.fft:
-        plot_fft(axes[1], window, args.sample_rate)
+        plot_fft(axes[1], window, args.sample_rate, args.channel)
 
     if args.save:
         fig.savefig(args.save, dpi=150)

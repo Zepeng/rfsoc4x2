@@ -23,27 +23,34 @@
 #include "ap_axi_sdata.h"
 #include "hls_stream.h"
 
-#define DATA_WIDTH 128
+#define STREAM_WIDTH 128
+#define PACKED_WIDTH (2 * STREAM_WIDTH)
 
-typedef ap_axis<DATA_WIDTH, 0, 0, 0> pkt;
+typedef ap_axis<STREAM_WIDTH, 0, 0, 0> pkt;
 
 extern "C" {
-void dummy_kernel(ap_uint<DATA_WIDTH>* buffer0,
+void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
                   hls::stream<pkt>& data_in,
                   hls::stream<pkt>& trigger_in,
-                  unsigned int size) {
+                  unsigned int size,
+                  unsigned int output_words) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
 #pragma HLS INTERFACE axis port = data_in
 #pragma HLS INTERFACE axis port = trigger_in
 
-// Auto-pipeline is going to apply pipeline to this loop
-dummy:
+    if (output_words < size) {
+        return;
+    }
+
+capture_two_channels:
     for (unsigned int i = 0; i < size; i++) {
 #pragma HLS PIPELINE II = 1
         pkt data_value = data_in.read();
         pkt trigger_value = trigger_in.read();
-        (void)trigger_value;
-        buffer0[i] = data_value.data;
+        ap_uint<PACKED_WIDTH> packed = 0;
+        packed.range(STREAM_WIDTH - 1, 0) = data_value.data;
+        packed.range(PACKED_WIDTH - 1, STREAM_WIDTH) = trigger_value.data;
+        buffer0[i] = packed;
     }
 }
 }

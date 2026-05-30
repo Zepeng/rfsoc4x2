@@ -41,14 +41,19 @@
 #include <vector>
 
 #define DATA_SIZE 8192
-#define DATA_WIDTH 128
+#define STREAM_WIDTH 128
+#define PACKED_WIDTH (2 * STREAM_WIDTH)
 
-typedef ap_uint<DATA_WIDTH> data_t;
+typedef ap_uint<PACKED_WIDTH> data_t;
 
-static const size_t SAMPLES_PER_WORD = DATA_WIDTH / 16;
+static const size_t SAMPLES_PER_WORD = STREAM_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
-static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
+static const size_t CHANNEL_COUNT = 2;
+static const size_t PACKED_WORDS_PER_FRAME = DATA_SIZE;
+static const double DEFAULT_SAMPLE_RATE_HZ = 2457.6e6;
 static const double DEFAULT_FRAME_RATE_HZ = 60.0;
+static const char* HOST_BUILD_TAG =
+    "test_adc host build: two-channel interleaved raw stream";
 
 enum class StreamMode {
     NONE,
@@ -72,16 +77,19 @@ struct Options {
 static void usage(const char* argv0)
 {
     std::cout
+        << HOST_BUILD_TAG << "\n\n"
         << "Usage:\n"
         << "  " << argv0 << " <XCLBIN File>\n"
         << "  " << argv0 << " <XCLBIN File> --tcp <host> <port> [options]\n"
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
+        << "Two-channel build: RFDC_DATA_AXIS and RFDC_TRIG_AXIS are captured together.\n"
+        << "wave.txt rows are: <RFDC_DATA_AXIS sample> <RFDC_TRIG_AXIS sample>.\n\n"
         << "Options:\n"
         << "  --rate <Hz>          Capture/send frame rate. Default: 60\n"
         << "  --frames <N>         Number of frames to send. Use 0 to stream until stopped.\n"
         << "                       Default: 1 without networking, 0 with networking.\n"
         << "  --sample-rate <Hz>   ADC sample rate written into frame headers.\n"
-        << "                       Default: 614.4e6\n"
+        << "                       Default: 2457.6e6\n"
         << "  --wave <file>        Also save captured samples as text. In streaming\n"
         << "                       mode this file is overwritten each frame.\n"
         << "  --no-wave            Do not write wave.txt in one-shot mode.\n"
@@ -112,6 +120,13 @@ static double parse_double(const std::string& value, const std::string& name)
 
 static Options parse_args(int argc, char** argv)
 {
+    if (argc == 2 && (std::string(argv[1]) == "-h" ||
+                      std::string(argv[1]) == "--help" ||
+                      std::string(argv[1]) == "--version")) {
+        usage(argv[0]);
+        exit(EXIT_SUCCESS);
+    }
+
     if (argc < 2) {
         usage(argv[0]);
         exit(EXIT_FAILURE);
@@ -220,8 +235,8 @@ static std::vector<uint8_t> make_tcp_header(uint64_t frame_id,
 {
     std::vector<uint8_t> header;
     header.reserve(32);
-    append_bytes(header, "RFT1", 4);
-    append_u16(header, 1);
+    append_bytes(header, "RFT2", 4);
+    append_u16(header, 2);
     append_u16(header, 32);
     append_u64(header, frame_id);
     append_u64(header, sample_rate_hz);
@@ -240,8 +255,8 @@ static std::vector<uint8_t> make_udp_header(uint64_t frame_id,
 {
     std::vector<uint8_t> header;
     header.reserve(40);
-    append_bytes(header, "RFU1", 4);
-    append_u16(header, 1);
+    append_bytes(header, "RFU2", 4);
+    append_u16(header, 2);
     append_u16(header, 40);
     append_u64(header, frame_id);
     append_u64(header, sample_rate_hz);
@@ -310,7 +325,10 @@ static void send_tcp_frame(int fd,
                            uint64_t sample_rate_hz,
                            const std::vector<int16_t>& samples)
 {
-    uint32_t sample_count = static_cast<uint32_t>(samples.size());
+    if ((samples.size() % CHANNEL_COUNT) != 0) {
+        throw std::runtime_error("Two-channel TCP payload has an odd sample count");
+    }
+    uint32_t sample_count = static_cast<uint32_t>(samples.size() / CHANNEL_COUNT);
     uint32_t payload_bytes = static_cast<uint32_t>(samples.size() * sizeof(samples[0]));
     std::vector<uint8_t> header = make_tcp_header(frame_id, sample_rate_hz, sample_count, payload_bytes);
     send_all(fd, header.data(), header.size());
@@ -323,6 +341,9 @@ static void send_udp_frame(int fd,
                            const std::vector<int16_t>& samples,
                            size_t udp_payload_bytes)
 {
+    if ((samples.size() % CHANNEL_COUNT) != 0) {
+        throw std::runtime_error("Two-channel UDP payload has an odd sample count");
+    }
     const uint8_t* payload = reinterpret_cast<const uint8_t*>(samples.data());
     size_t payload_bytes = samples.size() * sizeof(samples[0]);
     size_t chunk_count_size = (payload_bytes + udp_payload_bytes - 1) / udp_payload_bytes;
@@ -337,7 +358,7 @@ static void send_udp_frame(int fd,
         std::vector<uint8_t> packet = make_udp_header(
             frame_id,
             sample_rate_hz,
-            static_cast<uint32_t>(samples.size()),
+            static_cast<uint32_t>(samples.size() / CHANNEL_COUNT),
             chunk,
             chunk_count,
             static_cast<uint32_t>(offset),
@@ -354,29 +375,45 @@ static void send_udp_frame(int fd,
     }
 }
 
-static void pack_samples(const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data,
-                         std::vector<int16_t>& samples)
+static void pack_interleaved_channel_samples(
+    const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data,
+    std::vector<int16_t>& samples)
 {
+    if (source_hw_data.size() != PACKED_WORDS_PER_FRAME) {
+        throw std::runtime_error("Unexpected two-channel hardware buffer size");
+    }
+
     samples.clear();
-    samples.reserve(SAMPLES_PER_FRAME);
-    for (size_t i = 0; i < source_hw_data.size(); ++i) {
-        data_t word = source_hw_data[i];
+    samples.reserve(SAMPLES_PER_FRAME * CHANNEL_COUNT);
+    for (size_t i = 0; i < DATA_SIZE; ++i) {
+        ap_uint<STREAM_WIDTH> data_word =
+            source_hw_data[i].range(STREAM_WIDTH - 1, 0);
+        ap_uint<STREAM_WIDTH> trigger_word =
+            source_hw_data[i].range(PACKED_WIDTH - 1, STREAM_WIDTH);
         for (size_t j = 0; j < SAMPLES_PER_WORD; ++j) {
-            samples.push_back(static_cast<int16_t>(static_cast<short>(word & 0xffff)));
-            word >>= 16;
+            samples.push_back(static_cast<int16_t>(static_cast<short>(data_word & 0xffff)));
+            samples.push_back(static_cast<int16_t>(static_cast<short>(trigger_word & 0xffff)));
+            data_word >>= 16;
+            trigger_word >>= 16;
         }
     }
 }
 
 static void write_wave_file(const std::string& path, const std::vector<int16_t>& samples)
 {
+    if ((samples.size() % CHANNEL_COUNT) != 0) {
+        throw std::runtime_error("Two-channel wave payload has an odd sample count");
+    }
+
     FILE* fp = fopen(path.c_str(), "w");
     if (!fp) {
         throw std::runtime_error("Failed to open " + path + " for writing");
     }
 
-    for (size_t i = 0; i < samples.size(); ++i) {
-        fprintf(fp, "%d\n", static_cast<int>(samples[i]));
+    for (size_t i = 0; i < samples.size(); i += CHANNEL_COUNT) {
+        fprintf(fp, "%d %d\n",
+                static_cast<int>(samples[i]),
+                static_cast<int>(samples[i + 1]));
     }
     fclose(fp);
 }
@@ -392,13 +429,13 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    size_t vector_size_bytes = sizeof(data_t) * DATA_SIZE;
+    size_t vector_size_bytes = sizeof(data_t) * PACKED_WORDS_PER_FRAME;
     cl_int err;
     cl::Context context;
     cl::Kernel krnl;
     cl::CommandQueue q;
 
-    std::vector<data_t, aligned_allocator<data_t> > source_hw_data(DATA_SIZE);
+    std::vector<data_t, aligned_allocator<data_t> > source_hw_data(PACKED_WORDS_PER_FRAME);
     for (size_t i = 0; i < source_hw_data.size(); i++) {
         source_hw_data[i] = 99;
     }
@@ -431,8 +468,10 @@ int main(int argc, char** argv)
                                     source_hw_data.data(), &err));
 
     unsigned int size = DATA_SIZE;
+    unsigned int output_words = PACKED_WORDS_PER_FRAME;
     OCL_CHECK(err, err = krnl.setArg(0, buffer));
     OCL_CHECK(err, err = krnl.setArg(3, size));
+    OCL_CHECK(err, err = krnl.setArg(4, output_words));
 
     int socket_fd = -1;
     if (options.stream_mode != StreamMode::NONE) {
@@ -442,6 +481,7 @@ int main(int argc, char** argv)
                   << " frames to " << options.host << ":" << options.port
                   << " at " << options.frame_rate_hz << " Hz\n";
     }
+    std::cout << "Two-channel raw capture; output columns are RFDC_DATA_AXIS and RFDC_TRIG_AXIS\n";
 
     std::vector<int16_t> samples;
     uint64_t sample_rate_hz = sample_rate_header_value(options.sample_rate_hz);
@@ -458,7 +498,7 @@ int main(int argc, char** argv)
             OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer}, CL_MIGRATE_MEM_OBJECT_HOST));
             q.finish();
 
-            pack_samples(source_hw_data, samples);
+            pack_interleaved_channel_samples(source_hw_data, samples);
 
             if (options.stream_mode == StreamMode::TCP) {
                 send_tcp_frame(socket_fd, frame_id, sample_rate_hz, samples);
