@@ -131,7 +131,8 @@ foreach pin_name {
   print_pin_net $pin_name
 }
 
-puts "\nPlatform AXIS export tags:"
+puts "\nPlatform RFDC clocks and AXIS export tags:"
+puts "PFM.CLOCK = [prop_or_missing $rfdc PFM.CLOCK]"
 puts "PFM.AXIS_PORT = [prop_or_missing $rfdc PFM.AXIS_PORT]"
 
 puts "\nRFDC ADC properties relevant to exported real streams:"

@@ -52,8 +52,9 @@ static const size_t CHANNEL_COUNT = 2;
 static const size_t PACKED_WORDS_PER_FRAME = DATA_SIZE;
 static const double DEFAULT_SAMPLE_RATE_HZ = 2457.6e6;
 static const double DEFAULT_FRAME_RATE_HZ = 60.0;
+static const int DEFAULT_TRIGGER_THRESHOLD = 1000;
 static const char* HOST_BUILD_TAG =
-    "test_adc host build: two-channel interleaved raw stream";
+    "test_adc host build: FPGA threshold-triggered two-channel stream";
 
 enum class StreamMode {
     NONE,
@@ -72,6 +73,7 @@ struct Options {
     bool save_wave = true;
     std::string wave_file = "wave.txt";
     size_t udp_payload_bytes = 1400;
+    int trigger_threshold = DEFAULT_TRIGGER_THRESHOLD;
 };
 
 static void usage(const char* argv0)
@@ -82,14 +84,17 @@ static void usage(const char* argv0)
         << "  " << argv0 << " <XCLBIN File>\n"
         << "  " << argv0 << " <XCLBIN File> --tcp <host> <port> [options]\n"
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
-        << "Two-channel build: RFDC_DATA_AXIS and RFDC_TRIG_AXIS are captured together.\n"
-        << "wave.txt rows are: <RFDC_DATA_AXIS sample> <RFDC_TRIG_AXIS sample>.\n\n"
+        << "Two-channel build: ADC_C/RFDC_TRIG_AXIS triggers capture in FPGA.\n"
+        << "wave.txt rows are: <RFDC_DATA_AXIS sample> <RFDC_TRIG_AXIS sample>.\n"
+        << "Each waveform contains about 20% pretrigger and 80% post-trigger samples.\n\n"
         << "Options:\n"
         << "  --rate <Hz>          Capture/send frame rate. Default: 60\n"
         << "  --frames <N>         Number of frames to send. Use 0 to stream until stopped.\n"
         << "                       Default: 1 without networking, 0 with networking.\n"
         << "  --sample-rate <Hz>   ADC sample rate written into frame headers.\n"
         << "                       Default: 2457.6e6\n"
+        << "  --threshold <count>  Signed ADC_C rising-edge trigger threshold.\n"
+        << "                       Default: 1000\n"
         << "  --wave <file>        Also save captured samples as text. In streaming\n"
         << "                       mode this file is overwritten each frame.\n"
         << "  --no-wave            Do not write wave.txt in one-shot mode.\n"
@@ -105,6 +110,20 @@ static uint64_t parse_u64(const std::string& value, const std::string& name)
         throw std::runtime_error("Invalid integer for " + name + ": " + value);
     }
     return static_cast<uint64_t>(result);
+}
+
+static int parse_i32(const std::string& value, const std::string& name)
+{
+    char* end = nullptr;
+    errno = 0;
+    long result = strtol(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0') {
+        throw std::runtime_error("Invalid integer for " + name + ": " + value);
+    }
+    if (result < -2147483648L || result > 2147483647L) {
+        throw std::runtime_error("Value out of range for " + name + ": " + value);
+    }
+    return static_cast<int>(result);
 }
 
 static double parse_double(const std::string& value, const std::string& name)
@@ -164,6 +183,11 @@ static Options parse_args(int argc, char** argv)
                 throw std::runtime_error("--sample-rate requires a value");
             }
             options.sample_rate_hz = parse_double(argv[i], "--sample-rate");
+        } else if (arg == "--threshold") {
+            if (++i >= argc) {
+                throw std::runtime_error("--threshold requires a value");
+            }
+            options.trigger_threshold = parse_i32(argv[i], "--threshold");
         } else if (arg == "--wave") {
             if (++i >= argc) {
                 throw std::runtime_error("--wave requires a file path");
@@ -190,6 +214,9 @@ static Options parse_args(int argc, char** argv)
     }
     if (options.sample_rate_hz <= 0.0) {
         throw std::runtime_error("--sample-rate must be positive");
+    }
+    if (options.trigger_threshold < -32768 || options.trigger_threshold > 32767) {
+        throw std::runtime_error("--threshold must be in signed 16-bit ADC sample range");
     }
     if (options.udp_payload_bytes == 0 || options.udp_payload_bytes > 60000) {
         throw std::runtime_error("--udp-payload must be between 1 and 60000");
@@ -472,6 +499,7 @@ int main(int argc, char** argv)
     OCL_CHECK(err, err = krnl.setArg(0, buffer));
     OCL_CHECK(err, err = krnl.setArg(3, size));
     OCL_CHECK(err, err = krnl.setArg(4, output_words));
+    OCL_CHECK(err, err = krnl.setArg(5, options.trigger_threshold));
 
     int socket_fd = -1;
     if (options.stream_mode != StreamMode::NONE) {
@@ -481,7 +509,13 @@ int main(int argc, char** argv)
                   << " frames to " << options.host << ":" << options.port
                   << " at " << options.frame_rate_hz << " Hz\n";
     }
-    std::cout << "Two-channel raw capture; output columns are RFDC_DATA_AXIS and RFDC_TRIG_AXIS\n";
+    size_t pretrigger_words = PACKED_WORDS_PER_FRAME / 5;
+    size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
+    std::cout << "FPGA threshold trigger on RFDC_TRIG_AXIS/ADC_C"
+              << " at " << options.trigger_threshold << " ADC counts\n"
+              << "Output columns are RFDC_DATA_AXIS and RFDC_TRIG_AXIS\n"
+              << "Trigger word is near sample " << pretrigger_samples
+              << " of " << SAMPLES_PER_FRAME << " per-channel samples\n";
 
     std::vector<int16_t> samples;
     uint64_t sample_rate_hz = sample_rate_header_value(options.sample_rate_hz);
@@ -492,7 +526,7 @@ int main(int argc, char** argv)
     try {
         while (options.frames == 0 || frame_id < options.frames) {
             if (frame_id == 0 || (frame_id % 60) == 0) {
-                std::cout << "Capturing frame " << frame_id << "\n";
+                std::cout << "Waiting for trigger for frame " << frame_id << "\n";
             }
             OCL_CHECK(err, err = q.enqueueTask(krnl));
             OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer}, CL_MIGRATE_MEM_OBJECT_HOST));

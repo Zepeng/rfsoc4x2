@@ -56,6 +56,30 @@ def parse_args():
         help="Number of samples to plot from each frame. Default: 4096",
     )
     parser.add_argument(
+        "--plot-duration-us",
+        type=float,
+        help="Time span to plot in microseconds. Overrides --plot-count.",
+    )
+    parser.add_argument(
+        "--lane-order",
+        choices=("lsb-first", "msb-first"),
+        default="lsb-first",
+        help=(
+            "Order of the eight 16-bit samples inside each 128-bit RFDC "
+            "AXIS word. Default: lsb-first"
+        ),
+    )
+    parser.add_argument(
+        "--word-lane",
+        type=int,
+        choices=range(8),
+        metavar="0..7",
+        help=(
+            "Keep only one 16-bit sample lane from each 128-bit RFDC word. "
+            "This divides the effective sample rate by 8."
+        ),
+    )
+    parser.add_argument(
         "--save-dir",
         type=Path,
         help="Directory for saved frames. Created if needed.",
@@ -106,8 +130,74 @@ def payload_to_samples(payload, channel_count):
     return samples
 
 
+def sample_count(samples):
+    return samples.shape[0] if samples.ndim == 2 else samples.size
+
+
+def apply_lane_order(samples, lane_order, lanes_per_word=8):
+    if lane_order == "lsb-first":
+        return samples
+
+    total = sample_count(samples)
+    aligned = total - (total % lanes_per_word)
+    if aligned == 0:
+        return samples
+
+    head = samples[:aligned]
+    tail = samples[aligned:]
+    if samples.ndim == 1:
+        reordered = head.reshape((-1, lanes_per_word))[:, ::-1].reshape((-1,))
+    else:
+        reordered = (
+            head.reshape((-1, lanes_per_word, samples.shape[1]))
+            [:, ::-1, :]
+            .reshape((-1, samples.shape[1]))
+        )
+
+    if tail.size == 0:
+        return reordered
+    return np.concatenate((reordered, tail), axis=0)
+
+
+def select_word_lane(samples, lane, lanes_per_word=8):
+    if lane is None:
+        return samples
+
+    total = sample_count(samples)
+    aligned = total - (total % lanes_per_word)
+    if aligned == 0:
+        return samples[:0]
+
+    return samples[lane:aligned:lanes_per_word]
+
+
+def transform_samples(args, samples, sample_rate_hz):
+    samples = apply_lane_order(samples, args.lane_order)
+    samples = select_word_lane(samples, args.word_lane)
+    if args.word_lane is not None:
+        sample_rate_hz = sample_rate_hz / 8.0
+    return samples, sample_rate_hz
+
+
+def plot_count_from_duration(duration_us, sample_rate_hz):
+    if duration_us is None:
+        return None
+    if duration_us <= 0.0:
+        raise ValueError("--plot-duration-us must be positive")
+    if sample_rate_hz <= 0.0:
+        raise ValueError("--plot-duration-us requires a positive sample rate")
+    return max(1, int(round(duration_us * 1e-6 * sample_rate_hz)))
+
+
 def print_frame(frame_id, sample_rate_hz, samples, start_time):
     elapsed = time.monotonic() - start_time
+    if sample_count(samples) == 0:
+        print(
+            f"frame={frame_id} samples=0 sample_rate={sample_rate_hz}Hz "
+            f"elapsed={elapsed:.3f}s"
+        )
+        return
+
     if samples.ndim == 2:
         data = samples[:, 0]
         trigger = samples[:, 1]
@@ -140,27 +230,34 @@ def save_frame(args, frame_id, samples):
 
 
 class LivePlot:
-    def __init__(self, plot_count):
+    def __init__(self, plot_count, plot_duration_us):
         import matplotlib.pyplot as plt
 
         self.plt = plt
         self.plot_count = plot_count
+        self.plot_duration_us = plot_duration_us
         self.fig, self.ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
         self.lines = [
             self.ax.plot([], [], linewidth=1.0, label="RFDC_DATA_AXIS")[0],
             self.ax.plot([], [], linewidth=1.0, label="RFDC_TRIG_AXIS")[0],
         ]
-        self.ax.set_xlabel("Sample index")
         self.ax.set_ylabel("Amplitude (signed 16-bit)")
         self.ax.grid(True, alpha=0.3)
         self.ax.legend(loc="upper right")
         plt.ion()
         plt.show(block=False)
 
-    def update(self, frame_id, samples):
-        total = samples.shape[0] if samples.ndim == 2 else samples.size
-        count = total if self.plot_count == 0 else min(self.plot_count, total)
-        x = np.arange(count)
+    def update(self, frame_id, samples, sample_rate_hz):
+        total = sample_count(samples)
+        duration_count = plot_count_from_duration(self.plot_duration_us, sample_rate_hz)
+        plot_count = duration_count if duration_count is not None else self.plot_count
+        count = total if plot_count == 0 else min(plot_count, total)
+        if sample_rate_hz > 0:
+            x = np.arange(count) / sample_rate_hz * 1e6
+            self.ax.set_xlabel("Time (us)")
+        else:
+            x = np.arange(count)
+            self.ax.set_xlabel("Sample index")
         if samples.ndim == 2:
             y_values = [samples[:count, 0], samples[:count, 1]]
         else:
@@ -174,7 +271,7 @@ class LivePlot:
                 visible.append(y)
 
         self.ax.set_title(f"ADC frame {frame_id}")
-        self.ax.set_xlim(0, max(1, count - 1))
+        self.ax.set_xlim(0, x[-1] if count > 1 else 1)
         if visible:
             all_y = np.concatenate(visible)
             ymin = int(all_y.min())
@@ -193,10 +290,11 @@ class LivePlot:
 
 def handle_frame(args, plotter, frame_id, sample_rate_hz, payload, channel_count, start_time):
     samples = payload_to_samples(payload, channel_count)
+    samples, sample_rate_hz = transform_samples(args, samples, sample_rate_hz)
     print_frame(frame_id, sample_rate_hz, samples, start_time)
     save_frame(args, frame_id, samples)
     if plotter:
-        plotter.update(frame_id, samples)
+        plotter.update(frame_id, samples, sample_rate_hz)
 
 
 def receive_tcp(args, plotter):
@@ -291,7 +389,7 @@ def receive_udp(args, plotter):
 
 def main():
     args = parse_args()
-    plotter = LivePlot(args.plot_count) if args.plot else None
+    plotter = LivePlot(args.plot_count, args.plot_duration_us) if args.plot else None
     if args.mode == "tcp":
         receive_tcp(args, plotter)
     else:

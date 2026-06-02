@@ -1,7 +1,7 @@
 # A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2 (Vitis 2023.2.1 Unified IDE)
 This is an attempt to migrate [A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2](./vitis_adc_platform_classicIDE.md) to the Vitis 2023.2 Unified IDE. Steps 0 to 2 are mostly the same as those before.
 
-The current HLS kernel is a two-stream connectivity baseline: it reads the data and trigger streams in lockstep and writes both channels to memory. Actual threshold/window trigger logic can be added after this Vitis build is proven.
+The current HLS kernel implements a simple FPGA-side threshold trigger. It reads the data and trigger streams in lockstep, triggers on a rising threshold crossing from the ADC_C/RFDC_TRIG_AXIS stream, and writes both channels to memory with about 20% pretrigger and 80% post-trigger samples.
 
 
 ## Step 0: Install the RFSoC4x2 board files
@@ -32,6 +32,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - The RFDC follows the RFSoC-PYNQ base-design pattern for real ADC streams: ADC tiles 0 and 2 are enabled with sampling rate set to 4.9152 GSps and decimation set to 2, giving 2.4576 GS/s on each exported real AXI4-Stream.
    - `m00_axis` and `m02_axis` are exported for the two-stream dummy kernel. `m20_axis` and `m22_axis` are also exported as platform streams for later tile-2 checks.
    - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, and `RFDC_ADC_A_AXIS` for `m22_axis`.
+   - The native RFDC AXI4-Stream clocks are exported as fixed platform clocks: tile 0 `clk_adc0` is clock ID `3`, and tile 2 `clk_adc2` is clock ID `4`. Both run at `307.2 MHz`.
 
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
    ```bash
@@ -44,7 +45,9 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    PFM m02_axis sptag = RFDC_TRIG_AXIS
    PFM m20_axis sptag = RFDC_ADC_B_AXIS
    PFM m22_axis sptag = RFDC_ADC_A_AXIS
-   CHECK PASSED: tile 0/tile 2 real ADC streams and exported RFDC tags are present
+   PFM clk_adc0 = id 3, status fixed, freq_hz 307200000
+   PFM clk_adc2 = id 4, status fixed, freq_hz 307200000
+   CHECK PASSED: tile 0/tile 2 real ADC streams, native clocks, and exported RFDC tags are present
    ```
    This check does not require synthesis or implementation.
 
@@ -166,7 +169,7 @@ vitis -s create_rfsoc_adc_vitis_platform.py
 ```
 to create and build the platform component `rfsoc_adc_vitis_platform` in `~/workspace`. You can also run the python script line by line in the Vitis interactive mode (`vitis -i`).
 
-If you previously built the single-stream version of this platform, create a fresh platform component or delete the old `~/workspace/rfsoc_adc_vitis_platform` first. This avoids Vitis using cached metadata that still contains only `RFDC_AXIS`. After exporting a new `.xsa`, the Vitis platform must be regenerated before the application project is configured or rebuilt.
+If you previously built the single-stream version or a platform without RFDC clock IDs `3` and `4`, create a fresh platform component or delete the old `~/workspace/rfsoc_adc_vitis_platform` first. This avoids Vitis using cached stream or clock metadata. After exporting a new `.xsa`, the Vitis platform must be regenerated before the application project is configured or rebuilt.
  
 ## Step 4: Test the Vitis Platform on the RFSoC4x2 board
 0. Start Vitis Unified IDE:
@@ -198,26 +201,37 @@ If you previously built the single-stream version of this platform, create a fre
    - Modify sources:
      - Under the WORKSPACE view, replace the template file `dummy_kernel.cpp` in **test_adc_dummy_kernel [HLS]->Sources** with this [`dummy_kernel.cpp`](src/vitis_adc_platform/dummy_kernel.cpp).
      - Replace the template file `host.cpp` in **test_adc_host [Application]->Sources->src** with this [`host.cpp`](src/vitis_adc_platform/host.cpp).
-     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, `size`, and `output_words`. The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index.
-     - The kernel reads one 128-bit word from each stream per loop and packs them into one 256-bit DDR word so the loop can run at `II=1`.
+     - Configure **test_adc_dummy_kernel [HLS]** for the RFDC tile 0 AXI4-Stream clock before exporting its `.xo`. If its HLS configuration targets the device part directly, use:
+       ```
+       [hls]
+       clock=3.255208ns
+       ```
+       If its HLS configuration targets the Vitis platform, use:
+       ```
+       freqhz=307200000
+       ```
+       This HLS synthesis target and the separate `[clock] id=3:dummy_kernel_1` linker setting below are both required. Clock ID `3` is the native RFDC tile 0 `clk_adc0` output.
+     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, `size`, `output_words`, and `trigger_threshold`. The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index. To keep the capture path at one word per cycle, the threshold detector checks one fixed ADC_C sample lane per 128-bit AXI4-Stream word. Trigger timing is therefore quantized to eight ADC samples.
+     - The kernel requires the host's fixed 8192-word frame size. It continuously writes both streams into one full-frame circular UltraRAM buffer through one uninterrupted `II=1` acquisition loop. After the ADC_C/RFDC_TRIG_AXIS threshold crossing and the 80% post-trigger interval, it freezes the ring and copies the chronological waveform to DDR as packed 256-bit words.
    - Specify `v++` linker connectivity:
      - Under the WORKSPACE view, open the configuration file `dummy_kernel-link.cfg` in **test_adc [rfsoc_adc_vitis_platform]->Sources->hw_link**
      - Click the **</>** button to show the config source text and add the following lines to the file: 
        ```
        [clock]
-       id=2:dummy_kernel_1
+       id=3:dummy_kernel_1
 
        [connectivity]
        stream_connect = RFDC_DATA_AXIS:dummy_kernel_1.data_in
        stream_connect = RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
        ```
-     - If the link step reports that `RFDC_DATA_AXIS` or `RFDC_TRIG_AXIS` cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`.
+     - If the link step reports that clock ID `3`, `RFDC_DATA_AXIS`, or `RFDC_TRIG_AXIS` cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`. Clock ID `3` is the RFDC tile 0 `clk_adc0` output at `307.2 MHz`.
    - Disable SD card image generation:
      - Under the WORKSPACE view, open the configuration file `package.cfg` in **test_adc [rfsoc_adc_vitis_platform]->Sources->package**
      - Check the box under **Do not create image**
    - Build:
      - Under the FLOW view, select `test_adc` in **Component**   
      - Click **:hammer: HARDWARE->Build All** to build the project
+     - After rebuilding, verify that the generated HLS report targets `307.2 MHz`. For example, an `8196`-cycle `write_triggered_waveform` pipeline should report approximately `26.68 us`.
 
 3. Boot up the RFSoC board from an SD card:
    - Insert the SD card into a card reader on the host machine running Vitis. Check its device name:
@@ -334,16 +348,22 @@ If you previously built the single-stream version of this platform, create a fre
    Loading: 'dummy_kernel.xclbin'
    Trying to program device[0]: edge
    Device[0]: program successful!
-   Reading data from device
+   FPGA threshold trigger on RFDC_TRIG_AXIS/ADC_C at 1000 ADC counts
+   Waiting for trigger for frame 0
    Writing data to wave.txt
    ```
    The samples are stored in the file `wave.txt`.
+   The default trigger threshold is `1000` ADC counts. Override it from the board command line, for example:
+   ```shell
+   ./test_adc_host dummy_kernel.xclbin --threshold 2000
+   ```
+   Each frame contains about 20% pretrigger and 80% post-trigger samples; for the default frame size, the trigger word is near sample `13104`.
    Check the captured samples with:
    ```shell
    ls -lh wave.txt
    head wave.txt
    ```
-   If the program stops at `Reading data from device`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC stream samples. Recheck the reference clock setup above and inspect the XRT logs:
+   If the program stops at `Waiting for trigger for frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC_C/RFDC_TRIG_AXIS to cross the configured threshold. Lower `--threshold`, confirm the signal on ADC_C, and recheck the reference clock setup above and inspect the XRT logs:
    ```shell
    dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
    dmesg | tail -80

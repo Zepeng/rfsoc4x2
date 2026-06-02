@@ -31,6 +31,25 @@ def parse_args():
         help="Channel to plot for two-column files. Default: both",
     )
     parser.add_argument(
+        "--lane-order",
+        choices=("lsb-first", "msb-first"),
+        default="lsb-first",
+        help=(
+            "Order of the eight 16-bit samples inside each 128-bit RFDC "
+            "AXIS word. Default: lsb-first"
+        ),
+    )
+    parser.add_argument(
+        "--word-lane",
+        type=int,
+        choices=range(8),
+        metavar="0..7",
+        help=(
+            "Plot only one 16-bit sample lane from each 128-bit RFDC word. "
+            "This divides the effective sample rate by 8."
+        ),
+    )
+    parser.add_argument(
         "--start",
         type=int,
         default=0,
@@ -41,6 +60,14 @@ def parse_args():
         type=int,
         default=4096,
         help="Number of samples to plot. Use 0 for all samples. Default: 4096",
+    )
+    parser.add_argument(
+        "--duration-us",
+        type=float,
+        help=(
+            "Time span to plot in microseconds. Overrides --count when "
+            "--sample-rate is positive."
+        ),
     )
     parser.add_argument(
         "--fft",
@@ -69,6 +96,43 @@ def sample_count(samples):
     return samples.shape[0] if samples.ndim == 2 else samples.size
 
 
+def apply_lane_order(samples, lane_order, lanes_per_word=8):
+    if lane_order == "lsb-first":
+        return samples
+
+    total = sample_count(samples)
+    aligned = total - (total % lanes_per_word)
+    if aligned == 0:
+        return samples
+
+    head = samples[:aligned]
+    tail = samples[aligned:]
+    if samples.ndim == 1:
+        reordered = head.reshape((-1, lanes_per_word))[:, ::-1].reshape((-1,))
+    else:
+        reordered = (
+            head.reshape((-1, lanes_per_word, samples.shape[1]))
+            [:, ::-1, :]
+            .reshape((-1, samples.shape[1]))
+        )
+
+    if tail.size == 0:
+        return reordered
+    return np.concatenate((reordered, tail), axis=0)
+
+
+def select_word_lane(samples, lane, lanes_per_word=8):
+    if lane is None:
+        return samples
+
+    total = sample_count(samples)
+    aligned = total - (total % lanes_per_word)
+    if aligned == 0:
+        raise ValueError("Not enough samples to select a RFDC word lane")
+
+    return samples[lane:aligned:lanes_per_word]
+
+
 def select_window(samples, start, count):
     if start < 0:
         raise ValueError("--start must be non-negative")
@@ -79,6 +143,16 @@ def select_window(samples, start, count):
         raise ValueError(f"--start {start} is past the end of {total} samples")
     stop = total if count == 0 else min(total, start + count)
     return samples[start:stop], start, stop
+
+
+def count_from_duration(duration_us, sample_rate):
+    if duration_us is None:
+        return None
+    if duration_us <= 0.0:
+        raise ValueError("--duration-us must be positive")
+    if sample_rate <= 0.0:
+        raise ValueError("--duration-us requires a positive --sample-rate")
+    return max(1, int(round(duration_us * 1e-6 * sample_rate)))
 
 
 def make_time_axis(start, stop, sample_rate):
@@ -136,17 +210,24 @@ def plot_fft(ax, samples, sample_rate, channel):
 
 def main():
     args = parse_args()
-    samples = load_wave(args.wave_file)
-    window, start, stop = select_window(samples, args.start, args.count)
+    samples = apply_lane_order(load_wave(args.wave_file), args.lane_order)
+    samples = select_word_lane(samples, args.word_lane)
+    sample_rate = args.sample_rate
+    if args.word_lane is not None:
+        sample_rate /= 8.0
+    count = count_from_duration(args.duration_us, sample_rate)
+    if count is None:
+        count = args.count
+    window, start, stop = select_window(samples, args.start, count)
 
     rows = 2 if args.fft else 1
     fig, axes = plt.subplots(rows, 1, figsize=(10, 4 * rows), constrained_layout=True)
     if rows == 1:
         axes = [axes]
 
-    plot_time_domain(axes[0], window, start, stop, args.sample_rate, args.channel)
+    plot_time_domain(axes[0], window, start, stop, sample_rate, args.channel)
     if args.fft:
-        plot_fft(axes[1], window, args.sample_rate, args.channel)
+        plot_fft(axes[1], window, sample_rate, args.channel)
 
     if args.save:
         fig.savefig(args.save, dpi=150)

@@ -98,6 +98,7 @@ set type00 [print_prop $rfdc CONFIG.ADC_Data_Type00]
 set type02 [print_prop $rfdc CONFIG.ADC_Data_Type02]
 set type20 [print_prop $rfdc CONFIG.ADC_Data_Type20]
 set type22 [print_prop $rfdc CONFIG.ADC_Data_Type22]
+set rfdc_clocks [print_prop $rfdc PFM.CLOCK]
 set axis_ports [print_prop $rfdc PFM.AXIS_PORT]
 
 set vin0_01_ports [llength [get_bd_intf_ports -quiet vin0_01]]
@@ -116,6 +117,29 @@ set pfm_m00_tag ""
 set pfm_m02_tag ""
 set pfm_m20_tag ""
 set pfm_m22_tag ""
+set pfm_clk_adc0_id ""
+set pfm_clk_adc0_status ""
+set pfm_clk_adc0_freq ""
+set pfm_clk_adc2_id ""
+set pfm_clk_adc2_status ""
+set pfm_clk_adc2_freq ""
+
+if {$rfdc_clocks ne ""} {
+  if {[catch {
+    if {[dict exists $rfdc_clocks clk_adc0]} {
+      set pfm_clk_adc0_id [dict get [dict get $rfdc_clocks clk_adc0] id]
+      set pfm_clk_adc0_status [dict get [dict get $rfdc_clocks clk_adc0] status]
+      set pfm_clk_adc0_freq [dict get [dict get $rfdc_clocks clk_adc0] freq_hz]
+    }
+    if {[dict exists $rfdc_clocks clk_adc2]} {
+      set pfm_clk_adc2_id [dict get [dict get $rfdc_clocks clk_adc2] id]
+      set pfm_clk_adc2_status [dict get [dict get $rfdc_clocks clk_adc2] status]
+      set pfm_clk_adc2_freq [dict get [dict get $rfdc_clocks clk_adc2] freq_hz]
+    }
+  } pfm_err]} {
+    puts "ERROR: Could not parse PFM.CLOCK: $pfm_err"
+  }
+}
 
 if {$axis_ports ne ""} {
   if {[catch {
@@ -152,6 +176,8 @@ puts "PFM m00_axis sptag = $pfm_m00_tag"
 puts "PFM m02_axis sptag = $pfm_m02_tag"
 puts "PFM m20_axis sptag = $pfm_m20_tag"
 puts "PFM m22_axis sptag = $pfm_m22_tag"
+puts "PFM clk_adc0 = id $pfm_clk_adc0_id, status $pfm_clk_adc0_status, freq_hz $pfm_clk_adc0_freq"
+puts "PFM clk_adc2 = id $pfm_clk_adc2_id, status $pfm_clk_adc2_status, freq_hz $pfm_clk_adc2_freq"
 
 set failures 0
 if {$slice00 ne "true"} {
@@ -257,6 +283,19 @@ if {$pfm_m22_tag ne "RFDC_ADC_A_AXIS"} {
   puts "ERROR: Expected m22_axis PFM sptag to be RFDC_ADC_A_AXIS"
   incr failures
 }
+foreach {name value expected} [list \
+  {clk_adc0 PFM id} $pfm_clk_adc0_id 3 \
+  {clk_adc0 PFM status} $pfm_clk_adc0_status fixed \
+  {clk_adc0 PFM freq_hz} $pfm_clk_adc0_freq 307200000 \
+  {clk_adc2 PFM id} $pfm_clk_adc2_id 4 \
+  {clk_adc2 PFM status} $pfm_clk_adc2_status fixed \
+  {clk_adc2 PFM freq_hz} $pfm_clk_adc2_freq 307200000 \
+] {
+  if {$value ne $expected} {
+    puts "ERROR: Expected $name to be $expected"
+    incr failures
+  }
+}
 
 if {[catch {validate_bd_design} validate_msg validate_opts]} {
   puts "ERROR: validate_bd_design failed:"
@@ -271,5 +310,5 @@ if {$failures != 0} {
   exit 1
 }
 
-puts "CHECK PASSED: tile 0/tile 2 real ADC streams and exported RFDC tags are present"
+puts "CHECK PASSED: tile 0/tile 2 real ADC streams, native clocks, and exported RFDC tags are present"
 exit 0
