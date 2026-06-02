@@ -7,6 +7,19 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+CHANNEL_LABELS = (
+    "RFDC_DATA_AXIS/ADC_D",
+    "RFDC_TRIG_AXIS/ADC_C",
+    "RFDC_ADC_B_AXIS/ADC_B",
+    "RFDC_ADC_A_AXIS/ADC_A",
+)
+CHANNEL_INDEX = {
+    "data": 0,
+    "trigger": 1,
+    "adc-b": 2,
+    "adc-a": 3,
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -21,32 +34,37 @@ def parse_args():
     parser.add_argument(
         "--sample-rate",
         type=float,
-        default=2457.6e6,
-        help="Sample rate in samples/second. Default: 2457.6e6",
+        default=614.4e6,
+        help="Sample rate in samples/second. Default: 614.4e6",
     )
     parser.add_argument(
         "--channel",
-        choices=("data", "trigger", "both"),
-        default="both",
-        help="Channel to plot for two-column files. Default: both",
+        choices=("data", "trigger", "adc-b", "adc-a", "both", "all"),
+        default="all",
+        help="Channel selection for multi-column files. Default: all",
     )
     parser.add_argument(
         "--lane-order",
         choices=("lsb-first", "msb-first"),
         default="lsb-first",
         help=(
-            "Order of the eight 16-bit samples inside each 128-bit RFDC "
+            "Order of the 16-bit samples inside each RFDC "
             "AXIS word. Default: lsb-first"
         ),
     )
     parser.add_argument(
+        "--lanes-per-word",
+        type=int,
+        default=8,
+        help="Number of 16-bit samples in each RFDC AXIS word. Default: 8",
+    )
+    parser.add_argument(
         "--word-lane",
         type=int,
-        choices=range(8),
-        metavar="0..7",
+        metavar="N",
         help=(
-            "Plot only one 16-bit sample lane from each 128-bit RFDC word. "
-            "This divides the effective sample rate by 8."
+            "Plot only one 16-bit sample lane from each RFDC word. "
+            "This divides the effective sample rate by --lanes-per-word."
         ),
     )
     parser.add_argument(
@@ -84,19 +102,23 @@ def parse_args():
         action="store_true",
         help="Do not open an interactive plot window.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.lanes_per_word <= 0:
+        parser.error("--lanes-per-word must be positive")
+    if args.word_lane is not None and not 0 <= args.word_lane < args.lanes_per_word:
+        parser.error("--word-lane must be between 0 and --lanes-per-word - 1")
+    return args
 
 
 def load_wave(path):
-    samples = np.loadtxt(path, dtype=np.int16)
-    return np.atleast_1d(samples)
+    return np.loadtxt(path, dtype=np.int16, ndmin=2)
 
 
 def sample_count(samples):
     return samples.shape[0] if samples.ndim == 2 else samples.size
 
 
-def apply_lane_order(samples, lane_order, lanes_per_word=8):
+def apply_lane_order(samples, lane_order, lanes_per_word):
     if lane_order == "lsb-first":
         return samples
 
@@ -121,7 +143,7 @@ def apply_lane_order(samples, lane_order, lanes_per_word=8):
     return np.concatenate((reordered, tail), axis=0)
 
 
-def select_word_lane(samples, lane, lanes_per_word=8):
+def select_word_lane(samples, lane, lanes_per_word):
     if lane is None:
         return samples
 
@@ -163,13 +185,23 @@ def make_time_axis(start, stop, sample_rate):
 
 
 def selected_series(samples, channel):
-    if samples.ndim == 1:
-        return [("ADC", samples)]
-    if channel == "data":
-        return [("RFDC_DATA_AXIS", samples[:, 0])]
-    if channel == "trigger":
-        return [("RFDC_TRIG_AXIS", samples[:, 1])]
-    return [("RFDC_DATA_AXIS", samples[:, 0]), ("RFDC_TRIG_AXIS", samples[:, 1])]
+    if samples.ndim == 1 or samples.shape[1] == 1:
+        return [("ADC", samples.reshape((-1,)))]
+    available = [
+        (label, samples[:, index])
+        for index, label in enumerate(CHANNEL_LABELS[:samples.shape[1]])
+    ]
+    if channel == "all":
+        return available
+    if channel == "both":
+        return available[:2]
+    index = CHANNEL_INDEX[channel]
+    if index >= samples.shape[1]:
+        raise ValueError(
+            f"--channel {channel} requires column {index + 1}, "
+            f"but the file has {samples.shape[1]} columns"
+        )
+    return [available[index]]
 
 
 def plot_time_domain(ax, samples, start, stop, sample_rate, channel):
@@ -210,11 +242,11 @@ def plot_fft(ax, samples, sample_rate, channel):
 
 def main():
     args = parse_args()
-    samples = apply_lane_order(load_wave(args.wave_file), args.lane_order)
-    samples = select_word_lane(samples, args.word_lane)
+    samples = apply_lane_order(load_wave(args.wave_file), args.lane_order, args.lanes_per_word)
+    samples = select_word_lane(samples, args.word_lane, args.lanes_per_word)
     sample_rate = args.sample_rate
     if args.word_lane is not None:
-        sample_rate /= 8.0
+        sample_rate /= args.lanes_per_word
     count = count_from_duration(args.duration_us, sample_rate)
     if count is None:
         count = args.count

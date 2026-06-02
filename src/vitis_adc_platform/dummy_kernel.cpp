@@ -15,7 +15,7 @@
 */
 
 /* Slightly modified by Tan F. Wong to serve as a simple example kernel to
-* load streamed samples from ADC0 on ZU48DR to global memory.
+* load streamed ADC samples from ZU48DR to global memory.
 * 7/20/2023
 */
 
@@ -24,29 +24,39 @@
 #include "hls_stream.h"
 
 #define STREAM_WIDTH 128
-#define PACKED_WIDTH (2 * STREAM_WIDTH)
-#define CAPTURE_WORDS 8192
+#define CHANNEL_COUNT 4
+#define PACKED_WIDTH (CHANNEL_COUNT * STREAM_WIDTH)
+#define CAPTURE_WORDS 2048
 #define PRETRIGGER_WORDS (CAPTURE_WORDS / 5)
 #define POSTTRIGGER_WORDS (CAPTURE_WORDS - PRETRIGGER_WORDS - 1)
 
 typedef ap_axis<STREAM_WIDTH, 0, 0, 0> pkt;
 
-static ap_uint<PACKED_WIDTH> pack_stream_words(pkt data_value, pkt trigger_value)
+static ap_uint<PACKED_WIDTH> pack_stream_words(pkt data_value,
+                                               pkt trigger_value,
+                                               pkt adc_b_value,
+                                               pkt adc_a_value)
 {
 #pragma HLS INLINE
     ap_uint<PACKED_WIDTH> packed = 0;
     packed.range(STREAM_WIDTH - 1, 0) = data_value.data;
-    packed.range(PACKED_WIDTH - 1, STREAM_WIDTH) = trigger_value.data;
+    packed.range(2 * STREAM_WIDTH - 1, STREAM_WIDTH) = trigger_value.data;
+    packed.range(3 * STREAM_WIDTH - 1, 2 * STREAM_WIDTH) = adc_b_value.data;
+    packed.range(4 * STREAM_WIDTH - 1, 3 * STREAM_WIDTH) = adc_a_value.data;
     return packed;
 }
 
 static ap_uint<PACKED_WIDTH> read_packed_word(hls::stream<pkt>& data_in,
-                                              hls::stream<pkt>& trigger_in)
+                                              hls::stream<pkt>& trigger_in,
+                                              hls::stream<pkt>& adc_b_in,
+                                              hls::stream<pkt>& adc_a_in)
 {
 #pragma HLS INLINE
     pkt data_value = data_in.read();
     pkt trigger_value = trigger_in.read();
-    return pack_stream_words(data_value, trigger_value);
+    pkt adc_b_value = adc_b_in.read();
+    pkt adc_a_value = adc_a_in.read();
+    return pack_stream_words(data_value, trigger_value, adc_b_value, adc_a_value);
 }
 
 static ap_int<16> get_trigger_sample(ap_uint<PACKED_WIDTH> packed)
@@ -68,12 +78,16 @@ extern "C" {
 void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
                   hls::stream<pkt>& data_in,
                   hls::stream<pkt>& trigger_in,
+                  hls::stream<pkt>& adc_b_in,
+                  hls::stream<pkt>& adc_a_in,
                   unsigned int size,
                   unsigned int output_words,
                   int trigger_threshold) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
 #pragma HLS INTERFACE axis port = data_in
 #pragma HLS INTERFACE axis port = trigger_in
+#pragma HLS INTERFACE axis port = adc_b_in
+#pragma HLS INTERFACE axis port = adc_a_in
 
     if (size != CAPTURE_WORDS || output_words < CAPTURE_WORDS) {
         return;
@@ -95,7 +109,8 @@ capture_adc_c_threshold:
     while (!capture_complete) {
 #pragma HLS PIPELINE II = 1
 #pragma HLS DEPENDENCE variable=capture_buffer inter false
-        ap_uint<PACKED_WIDTH> packed = read_packed_word(data_in, trigger_in);
+        ap_uint<PACKED_WIDTH> packed =
+            read_packed_word(data_in, trigger_in, adc_b_in, adc_a_in);
         capture_buffer[write_idx] = packed;
         advance_index(write_idx, CAPTURE_WORDS);
 

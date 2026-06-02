@@ -1,7 +1,9 @@
-# A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2 (Vitis 2023.2.1 Unified IDE)
-This is an attempt to migrate [A Vitis Extensible Platform with ADC Data and Trigger Streams for RFSoC4x2](./vitis_adc_platform_classicIDE.md) to the Vitis 2023.2 Unified IDE. Steps 0 to 2 are mostly the same as those before.
+# A Vitis Extensible Platform with Four ADC Streams and an FPGA Trigger for RFSoC4x2 (Vitis 2023.2.1 Unified IDE)
+This is an attempt to migrate [A Vitis Extensible Platform with Four ADC Streams and an FPGA Trigger for RFSoC4x2](./vitis_adc_platform_classicIDE.md) to the Vitis 2023.2 Unified IDE. Steps 0 to 2 are mostly the same as those before.
 
-The current HLS kernel implements a simple FPGA-side threshold trigger. It reads the data and trigger streams in lockstep, triggers on a rising threshold crossing from the ADC_C/RFDC_TRIG_AXIS stream, and writes both channels to memory with about 20% pretrigger and 80% post-trigger samples.
+The current HLS kernel implements a simple FPGA-side threshold trigger. It reads ADC_D, ADC_C, ADC_B, and ADC_A in lockstep, triggers on a rising threshold crossing from the ADC_C/RFDC_TRIG_AXIS stream, and writes all four channels to memory with about 20% pretrigger and 80% post-trigger samples.
+
+To preserve all four ADCs as readout channels and trigger from the board's dedicated `1PPS` SMA input instead, follow the [external PPS trigger migration guide](vitis_adc_platform_pps_trigger.md).
 
 
 ## Step 0: Install the RFSoC4x2 board files
@@ -29,10 +31,10 @@ If not already installed, do the following steps to install the RFSoC board file
    which adds an [RF Data Converter](https://www.xilinx.com/products/intellectual-property/rf-data-converter.html#overview) IP to a slightly modified version of the hardware design in [Vitis Platform Creation Tutorial for
 ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platform_Creation/Design_Tutorials/02-Edge-AI-ZCU104/step1.md).
    - The Vivado project is named `rfsoc_adc_hardware`.
-   - The RFDC follows the RFSoC-PYNQ base-design pattern for real ADC streams: ADC tiles 0 and 2 are enabled with sampling rate set to 4.9152 GSps and decimation set to 2, giving 2.4576 GS/s on each exported real AXI4-Stream.
-   - `m00_axis` and `m02_axis` are exported for the two-stream dummy kernel. `m20_axis` and `m22_axis` are also exported as platform streams for later tile-2 checks.
+   - ADC tiles 0 and 2 are enabled with converter sampling rate set to 4.9152 GSps and decimation set to 8, giving 614.4 MS/s on each exported real ADC stream.
+   - `m00_axis`, `m02_axis`, `m20_axis`, and `m22_axis` are exported for the four-stream dummy kernel. Each AXI4-Stream beat contains eight consecutive signed 16-bit real samples.
    - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, and `RFDC_ADC_A_AXIS` for `m22_axis`.
-   - The native RFDC AXI4-Stream clocks are exported as fixed platform clocks: tile 0 `clk_adc0` is clock ID `3`, and tile 2 `clk_adc2` is clock ID `4`. Both run at `307.2 MHz`.
+   - Tile 0 `clk_adc0` is the common RFDC AXI4-Stream clock and is exported as fixed platform clock ID `3`. Both `m0_axis_aclk` and `m2_axis_aclk` use this `76.8 MHz` clock, so all four streams can feed one `II=1` HLS capture loop without an inserted clock-domain crossing. Tile 2 `clk_adc2` remains exported as fixed clock ID `4` for later use.
 
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
    ```bash
@@ -45,9 +47,11 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    PFM m02_axis sptag = RFDC_TRIG_AXIS
    PFM m20_axis sptag = RFDC_ADC_B_AXIS
    PFM m22_axis sptag = RFDC_ADC_A_AXIS
-   PFM clk_adc0 = id 3, status fixed, freq_hz 307200000
-   PFM clk_adc2 = id 4, status fixed, freq_hz 307200000
-   CHECK PASSED: tile 0/tile 2 real ADC streams, native clocks, and exported RFDC tags are present
+   m0_axis_aclk net = usp_rf_data_converter_0_clk_adc0
+   m2_axis_aclk net = usp_rf_data_converter_0_clk_adc0
+   PFM clk_adc0 = id 3, status fixed, freq_hz 76800000
+   PFM clk_adc2 = id 4, status fixed, freq_hz 76800000
+   CHECK PASSED: four 614.4 MS/s ADC streams use 8 samples/word on common clk_adc0 and exported RFDC tags are present
    ```
    This check does not require synthesis or implementation.
 
@@ -197,22 +201,23 @@ If you previously built the single-stream version or a platform without RFDC clo
      - **test_adc_host [Application]**: Application component    
   
 2. Modify the HLS kernel and host source codes and build the project:
-   If reusing an existing `test_adc` system project, reconfigure it against the regenerated `rfsoc_adc_vitis_platform` first. Then replace the HLS kernel and host sources and update the V++ connectivity below. A project created for the old single-stream platform still references `RFDC_AXIS` and `dummy_kernel_1.s_in`, and will not link against the new two-stream platform.
+   If reusing an existing `test_adc` system project, reconfigure it against the regenerated `rfsoc_adc_vitis_platform` first. Then replace the HLS kernel and host sources and update the V++ connectivity below. A project created for an older platform does not have the current four-stream kernel interface.
    - Modify sources:
      - Under the WORKSPACE view, replace the template file `dummy_kernel.cpp` in **test_adc_dummy_kernel [HLS]->Sources** with this [`dummy_kernel.cpp`](src/vitis_adc_platform/dummy_kernel.cpp).
      - Replace the template file `host.cpp` in **test_adc_host [Application]->Sources->src** with this [`host.cpp`](src/vitis_adc_platform/host.cpp).
      - Configure **test_adc_dummy_kernel [HLS]** for the RFDC tile 0 AXI4-Stream clock before exporting its `.xo`. If its HLS configuration targets the device part directly, use:
        ```
        [hls]
-       clock=3.255208ns
+       clock=13.020833ns
        ```
        If its HLS configuration targets the Vitis platform, use:
        ```
-       freqhz=307200000
+       freqhz=76800000
        ```
        This HLS synthesis target and the separate `[clock] id=3:dummy_kernel_1` linker setting below are both required. Clock ID `3` is the native RFDC tile 0 `clk_adc0` output.
-     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, `size`, `output_words`, and `trigger_threshold`. The host code sets `size` as kernel argument index `3`, because the second AXIS input shifts the scalar argument index. To keep the capture path at one word per cycle, the threshold detector checks one fixed ADC_C sample lane per 128-bit AXI4-Stream word. Trigger timing is therefore quantized to eight ADC samples.
-     - The kernel requires the host's fixed 8192-word frame size. It continuously writes both streams into one full-frame circular UltraRAM buffer through one uninterrupted `II=1` acquisition loop. After the ADC_C/RFDC_TRIG_AXIS threshold crossing and the 80% post-trigger interval, it freezes the ring and copies the chronological waveform to DDR as packed 256-bit words.
+       Do not bind this streaming kernel to the unrelated `400 MHz` PL clock merely because it is faster. Each RFDC producer emits one 128-bit word per `clk_adc0` cycle at `76.8 MHz`. This preserves the proven eight-sample real RFDC word format while decimation 8 reduces the per-channel sample rate to `614.4 MS/s`.
+     - The kernel arguments are now `buffer0`, `data_in`, `trigger_in`, `adc_b_in`, `adc_a_in`, `size`, `output_words`, and `trigger_threshold`. The host code sets `size` as kernel argument index `5`, because the four AXIS inputs precede the scalar arguments. To keep the capture path at one word per cycle, the threshold detector checks one fixed ADC_C sample lane per 128-bit AXI4-Stream word. Trigger timing is therefore quantized to eight ADC samples.
+     - The kernel requires the host's fixed 2048-word frame size. It continuously writes all four streams into one full-frame circular UltraRAM buffer through one uninterrupted `II=1` acquisition loop. After the ADC_C/RFDC_TRIG_AXIS threshold crossing and the 80% post-trigger interval, it freezes the ring and copies the chronological waveform to DDR as packed 512-bit words.
    - Specify `v++` linker connectivity:
      - Under the WORKSPACE view, open the configuration file `dummy_kernel-link.cfg` in **test_adc [rfsoc_adc_vitis_platform]->Sources->hw_link**
      - Click the **</>** button to show the config source text and add the following lines to the file: 
@@ -223,15 +228,17 @@ If you previously built the single-stream version or a platform without RFDC clo
        [connectivity]
        stream_connect = RFDC_DATA_AXIS:dummy_kernel_1.data_in
        stream_connect = RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
+       stream_connect = RFDC_ADC_B_AXIS:dummy_kernel_1.adc_b_in
+       stream_connect = RFDC_ADC_A_AXIS:dummy_kernel_1.adc_a_in
        ```
-     - If the link step reports that clock ID `3`, `RFDC_DATA_AXIS`, or `RFDC_TRIG_AXIS` cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`. Clock ID `3` is the RFDC tile 0 `clk_adc0` output at `307.2 MHz`.
+     - If the link step reports that clock ID `3` or an `RFDC_*_AXIS` tag cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`. Clock ID `3` is the common RFDC stream clock, tile 0 `clk_adc0`, at `76.8 MHz`.
    - Disable SD card image generation:
      - Under the WORKSPACE view, open the configuration file `package.cfg` in **test_adc [rfsoc_adc_vitis_platform]->Sources->package**
      - Check the box under **Do not create image**
    - Build:
      - Under the FLOW view, select `test_adc` in **Component**   
      - Click **:hammer: HARDWARE->Build All** to build the project
-     - After rebuilding, verify that the generated HLS report targets `307.2 MHz`. For example, an `8196`-cycle `write_triggered_waveform` pipeline should report approximately `26.68 us`.
+     - After rebuilding, verify that the generated HLS report targets `76.8 MHz`. For example, a roughly 2048-cycle `write_triggered_waveform` pipeline should report approximately `26.67 us`.
 
 3. Boot up the RFSoC board from an SD card:
    - Insert the SD card into a card reader on the host machine running Vitis. Check its device name:
@@ -278,6 +285,7 @@ If you previously built the single-stream version or a platform without RFDC clo
      sync
      sudo umount mnt
      ```
+     This four-channel decimation change modifies the Vivado hardware platform. Update the full generated `sd_card` directory for this rebuild, not only the host executable and `dummy_kernel.xclbin`.
    - Put the SD card into the microSD slot of the RFSoC4x2 board.
      Use a USB cable to connect the Linux host to the JTAG/UART port on the RFSoC4x2 board.
      Also connect the Ethernet port to a DHCP server if available.
@@ -349,6 +357,8 @@ If you previously built the single-stream version or a platform without RFDC clo
    Trying to program device[0]: edge
    Device[0]: program successful!
    FPGA threshold trigger on RFDC_TRIG_AXIS/ADC_C at 1000 ADC counts
+   Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A
+   Trigger word is near sample 3272 of 16384 per-channel samples
    Waiting for trigger for frame 0
    Writing data to wave.txt
    ```
@@ -357,18 +367,43 @@ If you previously built the single-stream version or a platform without RFDC clo
    ```shell
    ./test_adc_host dummy_kernel.xclbin --threshold 2000
    ```
-   Each frame contains about 20% pretrigger and 80% post-trigger samples; for the default frame size, the trigger word is near sample `13104`.
+   The FPGA trigger decision uses only `ADC_C`/`RFDC_TRIG_AXIS`. A passive splitter reduces the signal amplitude at both outputs, so a split signal may not cross the default threshold even when both outputs are visible on an oscilloscope. To test the capture path with an AC-coupled sine wave, lower the rising-edge threshold to zero:
+   ```shell
+   ./test_adc_host dummy_kernel.xclbin --threshold 0
+   ```
+   `wave.txt` and the Ethernet stream contain four columns/channels: `RFDC_DATA_AXIS`/ADC_D, `RFDC_TRIG_AXIS`/ADC_C, `RFDC_ADC_B_AXIS`/ADC_B, and `RFDC_ADC_A_AXIS`/ADC_A. Each frame contains about 20% pretrigger and 80% post-trigger samples; for the default frame size, the trigger word is near sample `3272`.
    Check the captured samples with:
    ```shell
    ls -lh wave.txt
    head wave.txt
    ```
+   Copy `wave.txt` to a PC with Python, NumPy, and Matplotlib installed. To plot all four channels and inspect continuity, select one sample lane from each 128-bit RFDC AXI4-Stream word:
+   ```shell
+   python3 src/vitis_adc_platform/plot_wave.py wave.txt \
+     --channel all \
+     --word-lane 0 \
+     --start 300 \
+     --count 600
+   ```
+   Each RFDC word contains eight signed 16-bit samples. With `--word-lane 0`, the effective plotted sample rate is `614.4 MS/s / 8 = 76.8 MS/s`. A `1 MHz` input should have approximately `76.8` plotted points per cycle and `1 us` between peaks. This mode is useful for checking that the captured AXI4-Stream words are continuous.
+
+   To inspect the full-rate waveform, omit `--word-lane`. Multiply a word-lane start index by eight when selecting the equivalent region:
+   ```shell
+   python3 src/vitis_adc_platform/plot_wave.py wave.txt \
+     --channel all \
+     --start 2400 \
+     --count 4800
+   ```
+   At the full `614.4 MS/s` sample rate, a `40 MHz` input has about `15.36` points per cycle. The same waveform plotted with `--word-lane 0` has only `1.92` points per cycle, so use the full-rate plot for high-frequency waveform shape checks. If a full-rate plot instead shows discontinuities every eight samples, retry with `--lane-order msb-first` to check the RFDC word-lane ordering.
+
+   The rebuilt common-clock design should produce a continuous waveform with no periodic jumps. Verify this on the board before analyzing the measured period.
+
    If the program stops at `Waiting for trigger for frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC_C/RFDC_TRIG_AXIS to cross the configured threshold. Lower `--threshold`, confirm the signal on ADC_C, and recheck the reference clock setup above and inspect the XRT logs:
    ```shell
    dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
    dmesg | tail -80
    ```
-   The host application can also stream repeated captures over Ethernet. Each frame contains 65536 two-channel sample pairs, so streaming at 60 Hz is about 15.7 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
+   The host application can also stream repeated captures over Ethernet. Each frame contains 16384 four-channel sample rows. At 614.4 MS/s, each frame spans about 26.67 us; streaming at 60 Hz is about 7.9 MB/s of ADC payload. TCP is the simplest option. On the PC, start the receiver from this repository:
    ```shell
    python3 src/vitis_adc_platform/receive_wave_stream.py --mode tcp --bind 0.0.0.0 --port 5000 --plot
    ```
@@ -381,6 +416,140 @@ If you previously built the single-stream version or a platform without RFDC clo
 
    Here is an example plot of the captured samples when a 2 MHz sinusoid is fed to the ADC-D SMA connector:
    ![2 MHz sinusoid](Figures/sin2M.png)
+
+## Validate the Four-Channel Hardware Build
+Complete this test before adding the external PPS trigger. The current build still uses an ADC_C threshold crossing as the FPGA trigger. The purpose of this test is to verify sample continuity and measure whether the cross-tile behavior is sufficient before deciding whether RFDC multi-tile synchronization is required.
+
+1. For the first boot of this static hardware build, copy the complete generated SD-card directory to the FAT32 boot partition:
+
+   ```shell
+   sudo cp -a \
+     ~/workspace/test_adc/build/hw/package/package/sd_card/. \
+     /path/to/mounted/boot/
+   sync
+   ```
+
+2. Boot the board, log in as `root`, and configure the RF reference clocks. Repeat the clock configuration after every power cycle:
+
+   ```shell
+   modprobe spidev
+   python3 /home/root/set_ref_clocks.py
+   ls /dev/spidev*
+   ```
+
+   The expected device nodes are:
+
+   ```text
+   /dev/spidev0.0
+   /dev/spidev0.1
+   /dev/spidev0.2
+   ```
+
+3. Apply the same `1 MHz` sine wave to all four ADC inputs using a suitable splitter or distribution amplifier and matched cables. Verify every splitter output with an oscilloscope. ADC_C must receive the signal because it still supplies the FPGA threshold trigger.
+
+   | ADC input | Captured column | RFDC tile |
+   |---|---|---|
+   | ADC_D | `RFDC_DATA_AXIS/ADC_D` | Tile 0 |
+   | ADC_C | `RFDC_TRIG_AXIS/ADC_C` | Tile 0 |
+   | ADC_B | `RFDC_ADC_B_AXIS/ADC_B` | Tile 2 |
+   | ADC_A | `RFDC_ADC_A_AXIS/ADC_A` | Tile 2 |
+
+4. Run one capture with a zero-crossing threshold. This avoids false failures caused by splitter attenuation:
+
+   ```shell
+   cd /run/media/boot-mmcblk0p1/
+   chmod +x test_adc_host
+   ./test_adc_host dummy_kernel.xclbin --threshold 0
+   ```
+
+5. Confirm that `wave.txt` has `16384` rows and four columns:
+
+   ```shell
+   wc -l wave.txt
+   head wave.txt
+   tail wave.txt
+   awk 'NF != 4 {bad++} END {print "rows with wrong column count:", bad+0}' wave.txt
+   grep -v '^0 0 0 0$' wave.txt | head
+   ```
+
+6. Copy the waveform to the PC:
+
+   ```shell
+   scp root@192.168.2.2:/run/media/boot-mmcblk0p1/wave.txt .
+   ```
+
+7. Plot one lane from each eight-sample RFDC word. This is useful for checking AXI4-Stream-word continuity:
+
+   ```shell
+   python3 src/vitis_adc_platform/plot_wave.py wave.txt \
+     --channel all \
+     --word-lane 0 \
+     --start 300 \
+     --count 600
+   ```
+
+   Plot the full-rate waveform:
+
+   ```shell
+     python3 src/vitis_adc_platform/plot_wave.py wave.txt \
+     --channel all \
+     --start 2400 \
+     --count 4800
+   ```
+
+   For a `1 MHz` input, adjacent peaks should be separated by approximately `1 us`. All four channels should be continuous with no periodic jumps. If the full-rate waveform instead alternates incorrectly every eight samples, retry with `--lane-order msb-first`.
+
+8. Plot the FFT using the complete waveform:
+
+   ```shell
+   python3 src/vitis_adc_platform/plot_wave.py wave.txt \
+     --channel all \
+     --count 0 \
+     --fft
+   ```
+
+   The dominant peak should be near `1 MHz`.
+
+9. Save ten captures on the board before the power cycle:
+
+   ```shell
+   mkdir -p /home/root/four_channel_runs/before_power_cycle
+   cd /run/media/boot-mmcblk0p1/
+
+   for i in $(seq -w 1 10); do
+     ./test_adc_host dummy_kernel.xclbin \
+       --threshold 0 \
+       --wave /home/root/four_channel_runs/before_power_cycle/wave_${i}.txt || break
+   done
+   ```
+
+10. Power-cycle the board, configure the RF reference clocks again, and save ten more captures:
+
+    ```shell
+    mkdir -p /home/root/four_channel_runs/after_power_cycle
+    cd /run/media/boot-mmcblk0p1/
+
+    for i in $(seq -w 1 10); do
+      ./test_adc_host dummy_kernel.xclbin \
+        --threshold 0 \
+        --wave /home/root/four_channel_runs/after_power_cycle/wave_${i}.txt || break
+    done
+    ```
+
+    Copy both sets of results to the PC:
+
+    ```shell
+    scp -r root@192.168.2.2:/home/root/four_channel_runs .
+    ```
+
+11. Compare the captures:
+
+    - Confirm sample continuity on every channel.
+    - Compare ADC_D with ADC_C to check the Tile 0 phase relationship.
+    - Compare ADC_B with ADC_A to check the Tile 2 phase relationship.
+    - Compare Tile 0 with Tile 2 across captures and power cycles.
+
+    A fixed cable-related offset is acceptable. Random phase changes after restart, Tile 2 corruption, or sample discontinuities mean that RFDC multi-tile synchronization or an explicit clock-domain-crossing design is required before relying on four-channel timing measurements.
 
 ## Step 5: Run Software and Hardware Emulation
 1. Software Emulation:

@@ -40,21 +40,21 @@
 #include <thread>
 #include <vector>
 
-#define DATA_SIZE 8192
+#define DATA_SIZE 2048
 #define STREAM_WIDTH 128
-#define PACKED_WIDTH (2 * STREAM_WIDTH)
+#define CHANNEL_COUNT 4
+#define PACKED_WIDTH (CHANNEL_COUNT * STREAM_WIDTH)
 
 typedef ap_uint<PACKED_WIDTH> data_t;
 
 static const size_t SAMPLES_PER_WORD = STREAM_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
-static const size_t CHANNEL_COUNT = 2;
 static const size_t PACKED_WORDS_PER_FRAME = DATA_SIZE;
-static const double DEFAULT_SAMPLE_RATE_HZ = 2457.6e6;
+static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
 static const double DEFAULT_FRAME_RATE_HZ = 60.0;
 static const int DEFAULT_TRIGGER_THRESHOLD = 1000;
 static const char* HOST_BUILD_TAG =
-    "test_adc host build: FPGA threshold-triggered two-channel stream";
+    "test_adc host build: FPGA threshold-triggered four-channel ADC stream";
 
 enum class StreamMode {
     NONE,
@@ -84,15 +84,15 @@ static void usage(const char* argv0)
         << "  " << argv0 << " <XCLBIN File>\n"
         << "  " << argv0 << " <XCLBIN File> --tcp <host> <port> [options]\n"
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
-        << "Two-channel build: ADC_C/RFDC_TRIG_AXIS triggers capture in FPGA.\n"
-        << "wave.txt rows are: <RFDC_DATA_AXIS sample> <RFDC_TRIG_AXIS sample>.\n"
+        << "Four-channel build: ADC_C/RFDC_TRIG_AXIS triggers capture in FPGA.\n"
+        << "wave.txt rows are: <ADC_D> <ADC_C> <ADC_B> <ADC_A>.\n"
         << "Each waveform contains about 20% pretrigger and 80% post-trigger samples.\n\n"
         << "Options:\n"
         << "  --rate <Hz>          Capture/send frame rate. Default: 60\n"
         << "  --frames <N>         Number of frames to send. Use 0 to stream until stopped.\n"
         << "                       Default: 1 without networking, 0 with networking.\n"
         << "  --sample-rate <Hz>   ADC sample rate written into frame headers.\n"
-        << "                       Default: 2457.6e6\n"
+        << "                       Default: 614.4e6\n"
         << "  --threshold <count>  Signed ADC_C rising-edge trigger threshold.\n"
         << "                       Default: 1000\n"
         << "  --wave <file>        Also save captured samples as text. In streaming\n"
@@ -262,8 +262,8 @@ static std::vector<uint8_t> make_tcp_header(uint64_t frame_id,
 {
     std::vector<uint8_t> header;
     header.reserve(32);
-    append_bytes(header, "RFT2", 4);
-    append_u16(header, 2);
+    append_bytes(header, "RFT3", 4);
+    append_u16(header, 3);
     append_u16(header, 32);
     append_u64(header, frame_id);
     append_u64(header, sample_rate_hz);
@@ -282,8 +282,8 @@ static std::vector<uint8_t> make_udp_header(uint64_t frame_id,
 {
     std::vector<uint8_t> header;
     header.reserve(40);
-    append_bytes(header, "RFU2", 4);
-    append_u16(header, 2);
+    append_bytes(header, "RFU3", 4);
+    append_u16(header, 3);
     append_u16(header, 40);
     append_u64(header, frame_id);
     append_u64(header, sample_rate_hz);
@@ -353,7 +353,7 @@ static void send_tcp_frame(int fd,
                            const std::vector<int16_t>& samples)
 {
     if ((samples.size() % CHANNEL_COUNT) != 0) {
-        throw std::runtime_error("Two-channel TCP payload has an odd sample count");
+        throw std::runtime_error("Four-channel TCP payload has an invalid sample count");
     }
     uint32_t sample_count = static_cast<uint32_t>(samples.size() / CHANNEL_COUNT);
     uint32_t payload_bytes = static_cast<uint32_t>(samples.size() * sizeof(samples[0]));
@@ -369,7 +369,7 @@ static void send_udp_frame(int fd,
                            size_t udp_payload_bytes)
 {
     if ((samples.size() % CHANNEL_COUNT) != 0) {
-        throw std::runtime_error("Two-channel UDP payload has an odd sample count");
+        throw std::runtime_error("Four-channel UDP payload has an invalid sample count");
     }
     const uint8_t* payload = reinterpret_cast<const uint8_t*>(samples.data());
     size_t payload_bytes = samples.size() * sizeof(samples[0]);
@@ -407,7 +407,7 @@ static void pack_interleaved_channel_samples(
     std::vector<int16_t>& samples)
 {
     if (source_hw_data.size() != PACKED_WORDS_PER_FRAME) {
-        throw std::runtime_error("Unexpected two-channel hardware buffer size");
+        throw std::runtime_error("Unexpected four-channel hardware buffer size");
     }
 
     samples.clear();
@@ -416,12 +416,20 @@ static void pack_interleaved_channel_samples(
         ap_uint<STREAM_WIDTH> data_word =
             source_hw_data[i].range(STREAM_WIDTH - 1, 0);
         ap_uint<STREAM_WIDTH> trigger_word =
-            source_hw_data[i].range(PACKED_WIDTH - 1, STREAM_WIDTH);
+            source_hw_data[i].range(2 * STREAM_WIDTH - 1, STREAM_WIDTH);
+        ap_uint<STREAM_WIDTH> adc_b_word =
+            source_hw_data[i].range(3 * STREAM_WIDTH - 1, 2 * STREAM_WIDTH);
+        ap_uint<STREAM_WIDTH> adc_a_word =
+            source_hw_data[i].range(4 * STREAM_WIDTH - 1, 3 * STREAM_WIDTH);
         for (size_t j = 0; j < SAMPLES_PER_WORD; ++j) {
             samples.push_back(static_cast<int16_t>(static_cast<short>(data_word & 0xffff)));
             samples.push_back(static_cast<int16_t>(static_cast<short>(trigger_word & 0xffff)));
+            samples.push_back(static_cast<int16_t>(static_cast<short>(adc_b_word & 0xffff)));
+            samples.push_back(static_cast<int16_t>(static_cast<short>(adc_a_word & 0xffff)));
             data_word >>= 16;
             trigger_word >>= 16;
+            adc_b_word >>= 16;
+            adc_a_word >>= 16;
         }
     }
 }
@@ -429,7 +437,7 @@ static void pack_interleaved_channel_samples(
 static void write_wave_file(const std::string& path, const std::vector<int16_t>& samples)
 {
     if ((samples.size() % CHANNEL_COUNT) != 0) {
-        throw std::runtime_error("Two-channel wave payload has an odd sample count");
+        throw std::runtime_error("Four-channel wave payload has an invalid sample count");
     }
 
     FILE* fp = fopen(path.c_str(), "w");
@@ -438,9 +446,11 @@ static void write_wave_file(const std::string& path, const std::vector<int16_t>&
     }
 
     for (size_t i = 0; i < samples.size(); i += CHANNEL_COUNT) {
-        fprintf(fp, "%d %d\n",
+        fprintf(fp, "%d %d %d %d\n",
                 static_cast<int>(samples[i]),
-                static_cast<int>(samples[i + 1]));
+                static_cast<int>(samples[i + 1]),
+                static_cast<int>(samples[i + 2]),
+                static_cast<int>(samples[i + 3]));
     }
     fclose(fp);
 }
@@ -497,9 +507,9 @@ int main(int argc, char** argv)
     unsigned int size = DATA_SIZE;
     unsigned int output_words = PACKED_WORDS_PER_FRAME;
     OCL_CHECK(err, err = krnl.setArg(0, buffer));
-    OCL_CHECK(err, err = krnl.setArg(3, size));
-    OCL_CHECK(err, err = krnl.setArg(4, output_words));
-    OCL_CHECK(err, err = krnl.setArg(5, options.trigger_threshold));
+    OCL_CHECK(err, err = krnl.setArg(5, size));
+    OCL_CHECK(err, err = krnl.setArg(6, output_words));
+    OCL_CHECK(err, err = krnl.setArg(7, options.trigger_threshold));
 
     int socket_fd = -1;
     if (options.stream_mode != StreamMode::NONE) {
@@ -513,7 +523,8 @@ int main(int argc, char** argv)
     size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
     std::cout << "FPGA threshold trigger on RFDC_TRIG_AXIS/ADC_C"
               << " at " << options.trigger_threshold << " ADC counts\n"
-              << "Output columns are RFDC_DATA_AXIS and RFDC_TRIG_AXIS\n"
+              << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
+              << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
               << "Trigger word is near sample " << pretrigger_samples
               << " of " << SAMPLES_PER_FRAME << " per-channel samples\n";
 

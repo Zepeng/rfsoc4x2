@@ -14,7 +14,7 @@ client.set_workspace(workspace)
 
 # Create platform
 platform_name = 'rfsoc_adc_vitis_platform'
-platform_description = 'A Vitis extensible platform with 1 ADC for the RFSoC4x2 board'
+platform_description = 'A Vitis extensible platform with 4 ADC streams for the RFSoC4x2 board'
 platform_hw = 'rfsoc_adc_hardware/rfsoc_adc_hardware.xsa'
 platform_hw_emu = 'rfsoc_adc_hardware/rfsoc_adc_hardware_emu.xsa'
 platform_domain = 'xrt'
@@ -62,9 +62,9 @@ lines = [\
   '  [bootloader] <'+boot_dir+platform_fsbl+'>',\
   '  [pmufw_image] <'+boot_dir+platform_pmu+'>',\
   '  [destination_device=pl] <bitstream>',\
-  '  [destination_cpu=a53-0, exception_level=el-3, trustzone] <atf,'+boot_dir+'bl31.elf>',\
-  '  [load=0x00100000] <dtb,'+boot_dir+'system.dtb>',\
-  '  [destination_cpu=a53-0, exception_level=el-2] <uboot,'+boot_dir+'u-boot.elf>',\
+  '  [destination_cpu=a53-0, exception_level=el-3, trustzone] <'+boot_dir+'bl31.elf>',\
+  '  [load=0x00100000] <'+boot_dir+'system.dtb>',\
+  '  [destination_cpu=a53-0, exception_level=el-2] <'+boot_dir+'u-boot.elf>',\
   '}'
 ]
 bif = boot_dir+'linux.bif'
@@ -120,7 +120,6 @@ domain.report()
 
 # Close the client connection and terminate the vitis server
 vitis.dispose()
-
 
 
 

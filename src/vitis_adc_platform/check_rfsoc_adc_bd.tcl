@@ -113,6 +113,8 @@ set m00_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m00
 set m02_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m02_axis]]
 set m20_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m20_axis]]
 set m22_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m22_axis]]
+set m0_axis_aclk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /usp_rf_data_converter_0/m0_axis_aclk]]]
+set m2_axis_aclk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /usp_rf_data_converter_0/m2_axis_aclk]]]
 set pfm_m00_tag ""
 set pfm_m02_tag ""
 set pfm_m20_tag ""
@@ -172,6 +174,8 @@ puts "m00_axis RFDC pin count = $m00_axis_pins"
 puts "m02_axis RFDC pin count = $m02_axis_pins"
 puts "m20_axis RFDC pin count = $m20_axis_pins"
 puts "m22_axis RFDC pin count = $m22_axis_pins"
+puts "m0_axis_aclk net = $m0_axis_aclk_net"
+puts "m2_axis_aclk net = $m2_axis_aclk_net"
 puts "PFM m00_axis sptag = $pfm_m00_tag"
 puts "PFM m02_axis sptag = $pfm_m02_tag"
 puts "PFM m20_axis sptag = $pfm_m20_tag"
@@ -197,12 +201,12 @@ if {$slice22 ne "true"} {
   incr failures
 }
 foreach {name value expected} [list \
-  CONFIG.ADC_Decimation_Mode00 $decim00 2 \
-  CONFIG.ADC_Decimation_Mode02 $decim02 2 \
-  CONFIG.ADC_Decimation_Mode20 $decim20 2 \
-  CONFIG.ADC_Decimation_Mode22 $decim22 2 \
-  CONFIG.ADC0_Outclk_Freq $outclk0 307.200 \
-  CONFIG.ADC2_Outclk_Freq $outclk2 307.200 \
+  CONFIG.ADC_Decimation_Mode00 $decim00 8 \
+  CONFIG.ADC_Decimation_Mode02 $decim02 8 \
+  CONFIG.ADC_Decimation_Mode20 $decim20 8 \
+  CONFIG.ADC_Decimation_Mode22 $decim22 8 \
+  CONFIG.ADC0_Outclk_Freq $outclk0 76.800 \
+  CONFIG.ADC2_Outclk_Freq $outclk2 76.800 \
   CONFIG.ADC0_Sampling_Rate $sampling_rate0 4.9152 \
   CONFIG.ADC2_Sampling_Rate $sampling_rate2 4.9152 \
   CONFIG.ADC_Data_Width00 $width00 8 \
@@ -267,6 +271,14 @@ if {$m22_axis_pins != 1} {
   puts "ERROR: Expected one RFDC m22_axis pin"
   incr failures
 }
+if {$m0_axis_aclk_net ne "usp_rf_data_converter_0_clk_adc0"} {
+  puts "ERROR: Expected m0_axis_aclk to use usp_rf_data_converter_0_clk_adc0"
+  incr failures
+}
+if {$m2_axis_aclk_net ne "usp_rf_data_converter_0_clk_adc0"} {
+  puts "ERROR: Expected m2_axis_aclk to use common stream clock usp_rf_data_converter_0_clk_adc0"
+  incr failures
+}
 if {$pfm_m00_tag ne "RFDC_DATA_AXIS"} {
   puts "ERROR: Expected m00_axis PFM sptag to be RFDC_DATA_AXIS"
   incr failures
@@ -286,10 +298,10 @@ if {$pfm_m22_tag ne "RFDC_ADC_A_AXIS"} {
 foreach {name value expected} [list \
   {clk_adc0 PFM id} $pfm_clk_adc0_id 3 \
   {clk_adc0 PFM status} $pfm_clk_adc0_status fixed \
-  {clk_adc0 PFM freq_hz} $pfm_clk_adc0_freq 307200000 \
+  {clk_adc0 PFM freq_hz} $pfm_clk_adc0_freq 76800000 \
   {clk_adc2 PFM id} $pfm_clk_adc2_id 4 \
   {clk_adc2 PFM status} $pfm_clk_adc2_status fixed \
-  {clk_adc2 PFM freq_hz} $pfm_clk_adc2_freq 307200000 \
+  {clk_adc2 PFM freq_hz} $pfm_clk_adc2_freq 76800000 \
 ] {
   if {$value ne $expected} {
     puts "ERROR: Expected $name to be $expected"
@@ -310,5 +322,5 @@ if {$failures != 0} {
   exit 1
 }
 
-puts "CHECK PASSED: tile 0/tile 2 real ADC streams, native clocks, and exported RFDC tags are present"
+puts "CHECK PASSED: four 614.4 MS/s ADC streams use 8 samples/word on common clk_adc0 and exported RFDC tags are present"
 exit 0

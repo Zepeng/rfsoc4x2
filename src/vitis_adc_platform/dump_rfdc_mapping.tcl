@@ -69,6 +69,20 @@ proc print_port_net {port_name} {
         $port_name $net [prop_or_missing $port BOARD_INTERFACE]]
 }
 
+proc print_scalar_pin_net {pin_name} {
+  set pin [get_bd_pins -quiet $pin_name]
+  if {[llength $pin] == 0} {
+    puts [format "%-45s missing" $pin_name]
+    return
+  }
+  set net [get_bd_nets -quiet -of_objects $pin]
+  if {[llength $net] == 0} {
+    puts [format "%-45s present, no net" $pin_name]
+    return
+  }
+  puts [format "%-45s net=%s" $pin_name $net]
+}
+
 if {[llength [get_projects -quiet]] == 0} {
   if {![file exists $hardware_tcl]} {
     fail "Cannot find $hardware_tcl"
@@ -134,6 +148,10 @@ foreach pin_name {
 puts "\nPlatform RFDC clocks and AXIS export tags:"
 puts "PFM.CLOCK = [prop_or_missing $rfdc PFM.CLOCK]"
 puts "PFM.AXIS_PORT = [prop_or_missing $rfdc PFM.AXIS_PORT]"
+
+puts "\nRFDC AXIS clocks:"
+print_scalar_pin_net /usp_rf_data_converter_0/m0_axis_aclk
+print_scalar_pin_net /usp_rf_data_converter_0/m2_axis_aclk
 
 puts "\nRFDC ADC properties relevant to exported real streams:"
 foreach prop {

@@ -13,8 +13,16 @@ TCP_HEADER = struct.Struct(">4sHHQQII")
 UDP_HEADER = struct.Struct(">4sHHQQIHHII")
 TCP_MAGIC_V1 = b"RFT1"
 TCP_MAGIC_V2 = b"RFT2"
+TCP_MAGIC_V3 = b"RFT3"
 UDP_MAGIC_V1 = b"RFU1"
 UDP_MAGIC_V2 = b"RFU2"
+UDP_MAGIC_V3 = b"RFU3"
+CHANNEL_LABELS = (
+    "RFDC_DATA_AXIS/ADC_D",
+    "RFDC_TRIG_AXIS/ADC_C",
+    "RFDC_ADC_B_AXIS/ADC_B",
+    "RFDC_ADC_A_AXIS/ADC_A",
+)
 
 
 def parse_args():
@@ -65,18 +73,23 @@ def parse_args():
         choices=("lsb-first", "msb-first"),
         default="lsb-first",
         help=(
-            "Order of the eight 16-bit samples inside each 128-bit RFDC "
+            "Order of the 16-bit samples inside each RFDC "
             "AXIS word. Default: lsb-first"
         ),
     )
     parser.add_argument(
+        "--lanes-per-word",
+        type=int,
+        default=8,
+        help="Number of 16-bit samples in each RFDC AXIS word. Default: 8",
+    )
+    parser.add_argument(
         "--word-lane",
         type=int,
-        choices=range(8),
-        metavar="0..7",
+        metavar="N",
         help=(
-            "Keep only one 16-bit sample lane from each 128-bit RFDC word. "
-            "This divides the effective sample rate by 8."
+            "Keep only one 16-bit sample lane from each RFDC word. "
+            "This divides the effective sample rate by --lanes-per-word."
         ),
     )
     parser.add_argument(
@@ -94,7 +107,12 @@ def parse_args():
         action="store_true",
         help="Save each received frame as wave_XXXXXXXX.npy.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.lanes_per_word <= 0:
+        parser.error("--lanes-per-word must be positive")
+    if args.word_lane is not None and not 0 <= args.word_lane < args.lanes_per_word:
+        parser.error("--word-lane must be between 0 and --lanes-per-word - 1")
+    return args
 
 
 def recv_exact(sock, size):
@@ -115,18 +133,22 @@ def channel_count_from_header(magic, version, mode):
             return 1
         if magic == TCP_MAGIC_V2 and version == 2:
             return 2
+        if magic == TCP_MAGIC_V3 and version == 3:
+            return 4
     else:
         if magic == UDP_MAGIC_V1 and version == 1:
             return 1
         if magic == UDP_MAGIC_V2 and version == 2:
             return 2
+        if magic == UDP_MAGIC_V3 and version == 3:
+            return 4
     return 0
 
 
 def payload_to_samples(payload, channel_count):
     samples = np.frombuffer(payload, dtype="<i2").copy()
-    if channel_count == 2:
-        return samples.reshape((-1, 2))
+    if channel_count > 1:
+        return samples.reshape((-1, channel_count))
     return samples
 
 
@@ -134,7 +156,7 @@ def sample_count(samples):
     return samples.shape[0] if samples.ndim == 2 else samples.size
 
 
-def apply_lane_order(samples, lane_order, lanes_per_word=8):
+def apply_lane_order(samples, lane_order, lanes_per_word):
     if lane_order == "lsb-first":
         return samples
 
@@ -159,7 +181,7 @@ def apply_lane_order(samples, lane_order, lanes_per_word=8):
     return np.concatenate((reordered, tail), axis=0)
 
 
-def select_word_lane(samples, lane, lanes_per_word=8):
+def select_word_lane(samples, lane, lanes_per_word):
     if lane is None:
         return samples
 
@@ -172,10 +194,10 @@ def select_word_lane(samples, lane, lanes_per_word=8):
 
 
 def transform_samples(args, samples, sample_rate_hz):
-    samples = apply_lane_order(samples, args.lane_order)
-    samples = select_word_lane(samples, args.word_lane)
+    samples = apply_lane_order(samples, args.lane_order, args.lanes_per_word)
+    samples = select_word_lane(samples, args.word_lane, args.lanes_per_word)
     if args.word_lane is not None:
-        sample_rate_hz = sample_rate_hz / 8.0
+        sample_rate_hz = sample_rate_hz / args.lanes_per_word
     return samples, sample_rate_hz
 
 
@@ -199,13 +221,18 @@ def print_frame(frame_id, sample_rate_hz, samples, start_time):
         return
 
     if samples.ndim == 2:
-        data = samples[:, 0]
-        trigger = samples[:, 1]
+        stats = []
+        for index in range(samples.shape[1]):
+            values = samples[:, index]
+            name = CHANNEL_LABELS[index] if index < len(CHANNEL_LABELS) else f"ch{index}"
+            stats.append(
+                f"{name}_min={values.min()} {name}_max={values.max()} "
+                f"{name}_mean={values.mean():.2f}"
+            )
         print(
-            f"frame={frame_id} samples={samples.shape[0]} channels=2 "
+            f"frame={frame_id} samples={samples.shape[0]} channels={samples.shape[1]} "
             f"sample_rate={sample_rate_hz}Hz elapsed={elapsed:.3f}s "
-            f"data_min={data.min()} data_max={data.max()} data_mean={data.mean():.2f} "
-            f"trig_min={trigger.min()} trig_max={trigger.max()} trig_mean={trigger.mean():.2f}"
+            + " ".join(stats)
         )
     else:
         print(
@@ -238,8 +265,8 @@ class LivePlot:
         self.plot_duration_us = plot_duration_us
         self.fig, self.ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
         self.lines = [
-            self.ax.plot([], [], linewidth=1.0, label="RFDC_DATA_AXIS")[0],
-            self.ax.plot([], [], linewidth=1.0, label="RFDC_TRIG_AXIS")[0],
+            self.ax.plot([], [], linewidth=1.0, label=label)[0]
+            for label in CHANNEL_LABELS
         ]
         self.ax.set_ylabel("Amplitude (signed 16-bit)")
         self.ax.grid(True, alpha=0.3)
@@ -259,9 +286,13 @@ class LivePlot:
             x = np.arange(count)
             self.ax.set_xlabel("Sample index")
         if samples.ndim == 2:
-            y_values = [samples[:count, 0], samples[:count, 1]]
+            y_values = [samples[:count, index] for index in range(samples.shape[1])]
         else:
-            y_values = [samples[:count], np.array([], dtype=samples.dtype)]
+            y_values = [samples[:count]]
+        y_values += [
+            np.array([], dtype=samples.dtype)
+            for _ in range(len(self.lines) - len(y_values))
+        ]
 
         visible = []
         for line, y in zip(self.lines, y_values):
