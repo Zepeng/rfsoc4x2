@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 CHANNEL_LABELS = (
-    "RFDC_DATA_AXIS/ADC_D",
-    "RFDC_TRIG_AXIS/ADC_C",
-    "RFDC_ADC_B_AXIS/ADC_B",
-    "RFDC_ADC_A_AXIS/ADC_A",
+    "ADC_D",
+    "ADC_C",
+    "ADC_B",
+    "ADC_A",
 )
 CHANNEL_INDEX = {
     "data": 0,
@@ -55,16 +55,18 @@ def parse_args():
     parser.add_argument(
         "--lanes-per-word",
         type=int,
-        default=8,
-        help="Number of 16-bit samples in each RFDC AXIS word. Default: 8",
+        default=2,
+        help="Decimation factor used with --word-lane: keep 1 of every N samples. "
+             "Default: 2",
     )
     parser.add_argument(
         "--word-lane",
         type=int,
+        default=0,
         metavar="N",
         help=(
-            "Plot only one 16-bit sample lane from each RFDC word. "
-            "This divides the effective sample rate by --lanes-per-word."
+            "Keep lane N of every --lanes-per-word samples; default 0 gives the "
+            "smooth decimated view. Use -1 for full-rate (all samples). Default: 0"
         ),
     )
     parser.add_argument(
@@ -105,8 +107,8 @@ def parse_args():
     args = parser.parse_args()
     if args.lanes_per_word <= 0:
         parser.error("--lanes-per-word must be positive")
-    if args.word_lane is not None and not 0 <= args.word_lane < args.lanes_per_word:
-        parser.error("--word-lane must be between 0 and --lanes-per-word - 1")
+    if args.word_lane != -1 and not 0 <= args.word_lane < args.lanes_per_word:
+        parser.error("--word-lane must be -1 (full rate) or 0..--lanes-per-word - 1")
     return args
 
 
@@ -144,7 +146,7 @@ def apply_lane_order(samples, lane_order, lanes_per_word):
 
 
 def select_word_lane(samples, lane, lanes_per_word):
-    if lane is None:
+    if lane is None or lane < 0:
         return samples
 
     total = sample_count(samples)
@@ -245,7 +247,7 @@ def main():
     samples = apply_lane_order(load_wave(args.wave_file), args.lane_order, args.lanes_per_word)
     samples = select_word_lane(samples, args.word_lane, args.lanes_per_word)
     sample_rate = args.sample_rate
-    if args.word_lane is not None:
+    if args.word_lane is not None and args.word_lane >= 0:
         sample_rate /= args.lanes_per_word
     count = count_from_duration(args.duration_us, sample_rate)
     if count is None:

@@ -22,10 +22,10 @@ TCP_HEADER = struct.Struct(">4sHHQQII")
 TCP_MAGIC_V3 = b"RFT3"
 CHANNEL_COUNT = 4
 CHANNEL_LABELS = (
-    "ADC_D (RFDC_DATA_AXIS)",
-    "ADC_C (RFDC_TRIG_AXIS)",
-    "ADC_B (RFDC_ADC_B_AXIS)",
-    "ADC_A (RFDC_ADC_A_AXIS)",
+    "ADC_D",
+    "ADC_C",
+    "ADC_B",
+    "ADC_A",
 )
 CHANNEL_KEYS = ("data", "trigger", "adc-b", "adc-a")
 

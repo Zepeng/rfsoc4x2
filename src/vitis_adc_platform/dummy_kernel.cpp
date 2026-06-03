@@ -31,6 +31,7 @@
 #define POSTTRIGGER_WORDS (CAPTURE_WORDS - PRETRIGGER_WORDS - 1)
 
 typedef ap_axis<STREAM_WIDTH, 0, 0, 0> pkt;
+typedef ap_uint<32> trigger_pkt;
 
 static ap_uint<PACKED_WIDTH> pack_stream_words(pkt data_value,
                                                pkt trigger_value,
@@ -59,12 +60,6 @@ static ap_uint<PACKED_WIDTH> read_packed_word(hls::stream<pkt>& data_in,
     return pack_stream_words(data_value, trigger_value, adc_b_value, adc_a_value);
 }
 
-static ap_int<16> get_trigger_sample(ap_uint<PACKED_WIDTH> packed)
-{
-#pragma HLS INLINE
-    return packed.range(STREAM_WIDTH + 15, STREAM_WIDTH);
-}
-
 static void advance_index(unsigned int& index, unsigned int limit)
 {
 #pragma HLS INLINE
@@ -80,14 +75,15 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
                   hls::stream<pkt>& trigger_in,
                   hls::stream<pkt>& adc_b_in,
                   hls::stream<pkt>& adc_a_in,
+                  hls::stream<trigger_pkt>& ext_trigger_in,
                   unsigned int size,
-                  unsigned int output_words,
-                  int trigger_threshold) {
+                  unsigned int output_words) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
 #pragma HLS INTERFACE axis port = data_in
 #pragma HLS INTERFACE axis port = trigger_in
 #pragma HLS INTERFACE axis port = adc_b_in
 #pragma HLS INTERFACE axis port = adc_a_in
+#pragma HLS INTERFACE axis port = ext_trigger_in
 
     if (size != CAPTURE_WORDS || output_words < CAPTURE_WORDS) {
         return;
@@ -96,33 +92,41 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
     ap_uint<PACKED_WIDTH> capture_buffer[CAPTURE_WORDS];
 #pragma HLS BIND_STORAGE variable=capture_buffer type=ram_2p impl=uram latency=2
 
-    ap_int<16> threshold = trigger_threshold;
-    ap_int<16> previous_trigger_sample = 0;
     unsigned int write_idx = 0;
     unsigned int pretrigger_count = 0;
     unsigned int posttrigger_count = 0;
-    bool trigger_armed = false;
+    bool pretrigger_ready = false;
+    bool previous_ext_trigger_level = false;
+    bool ext_trigger_armed = false;
     bool triggered = false;
     bool capture_complete = false;
 
-capture_adc_c_threshold:
+capture_external_trigger:
     while (!capture_complete) {
 #pragma HLS PIPELINE II = 1
 #pragma HLS DEPENDENCE variable=capture_buffer inter false
         ap_uint<PACKED_WIDTH> packed =
             read_packed_word(data_in, trigger_in, adc_b_in, adc_a_in);
+        trigger_pkt ext_trigger_word = ext_trigger_in.read();
+
         capture_buffer[write_idx] = packed;
         advance_index(write_idx, CAPTURE_WORDS);
 
-        ap_int<16> trigger_sample = get_trigger_sample(packed);
+        bool ext_trigger_level = ext_trigger_word[0];
+        if (!ext_trigger_level) {
+            ext_trigger_armed = true;
+        }
         bool crossing =
-            previous_trigger_sample < threshold && trigger_sample >= threshold;
-        previous_trigger_sample = trigger_sample;
+            ext_trigger_armed && !previous_ext_trigger_level && ext_trigger_level;
+        if (crossing) {
+            ext_trigger_armed = false;
+        }
+        previous_ext_trigger_level = ext_trigger_level;
 
-        if (!trigger_armed) {
+        if (!pretrigger_ready) {
             pretrigger_count++;
             if (pretrigger_count == PRETRIGGER_WORDS) {
-                trigger_armed = true;
+                pretrigger_ready = true;
             }
         } else if (!triggered) {
             if (crossing) {

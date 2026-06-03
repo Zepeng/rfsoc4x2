@@ -110,17 +110,13 @@ The SMA path is AC-coupled, so:
 | Waveform | Pulse or square wave |
 | Frequency | `1 Hz`, then `60 Hz` |
 | Pulse width | `1 µs` to `1 ms` |
-| Amplitude | start `1 Vpp`, raise gradually if PL does not toggle |
+| Amplitude | `3.3 Vpp` for bring-up, verified at the cable end |
 | Offset | `0 V` |
 | Generator load | `50 Ω` |
 
 ### Capture rate and missed triggers
-The capture rate is set by the trigger source, not the host. The current ADC_C
-threshold trigger streams at the host `--rate` (default `60 Hz`) because threshold
-crossings are abundant — each launched kernel finds a trigger almost immediately, so the
-loop is paced by the host's per-frame work (read DDR + format + send/save + re-enqueue).
-A PPS edge is sparse instead, so the kernel blocks until the next edge and the loop is
-paced by the PPS itself.
+The capture rate is set by the trigger source, not the host. With a PPS edge, the
+kernel blocks until the next edge and the loop is paced by the PPS itself.
 
 Every PPS edge is still captured as long as that per-frame work finishes within one PPS
 period: after a capture the kernel re-arms and waits, armed, for the next edge. The
@@ -131,10 +127,10 @@ PPS period, in which case the next edge is taken (a one-period gap); with abunda
 crossings such a miss is invisible, with sparse PPS edges it costs a full period.
 
 > **`--rate` gotcha:** the kernel blocks on the PPS edge, so the edges should pace the
-> loop. If `--rate` is left at the PPS rate, the host's pacing sleep stacks on top of the
-> kernel's ~one-period blocking wait and can push re-arm past the next edge, catching
-> only every other edge (e.g. 30 Hz for a 60 Hz PPS). Set `--rate` well above the PPS
-> rate and let the PPS set the cadence.
+> loop. If `--rate` is left at the PPS rate, host pacing can stack on top of the
+> kernel's blocking wait and push re-arm past the next edge. The host default is now
+> `1000 Hz`; keep `--rate` comfortably above the PPS rate and let the PPS set the
+> cadence.
 
 Ping-pong / queued buffers are only needed if per-frame work approaches or exceeds the
 trigger period (much higher rates or heavy per-frame transport) — not at `60 Hz`.
@@ -431,7 +427,7 @@ ADC_C / `trigger_in` is now just readout column 2 — its data path is unchanged
 
 ## 8. Host Application Changes (`host.cpp`)
 
-The kernel now has five AXIS inputs and two scalar args. Update `setArg` (the four AXIS
+The kernel now has five AXIS inputs and two scalar args. Update `setArg` (the five AXIS
 streams are connected by the linker, not set here):
 
 ```cpp

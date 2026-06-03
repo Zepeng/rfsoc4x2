@@ -1,9 +1,7 @@
-# A Vitis Extensible Platform with Four ADC Streams and an FPGA Trigger for RFSoC4x2 (Vitis 2023.1 Classic IDE)
-This is my second experiment with the RFSoC4x2 board. The goal is to build a simple Vitis extensible platform that captures four ADC streams from the ZU48DR device on board while using one ADC stream as the FPGA trigger source.
+# A Vitis Extensible Platform with Four ADC Streams and External PPS Trigger for RFSoC4x2 (Vitis 2023.1 Classic IDE)
+This is my second experiment with the RFSoC4x2 board. The goal is to build a simple Vitis extensible platform that captures four ADC streams from the ZU48DR device on board while using the board `1PPS` SMA input as the FPGA trigger source.
 
-The current HLS kernel implements a simple FPGA-side threshold trigger. It reads ADC_D, ADC_C, ADC_B, and ADC_A in lockstep, triggers on a rising threshold crossing from the ADC_C/RFDC_TRIG_AXIS stream, and writes all four channels to memory with about 20% pretrigger and 80% post-trigger samples.
-
-To preserve all four ADCs as readout channels and trigger from the board's dedicated `1PPS` SMA input instead, follow the [external PPS trigger migration guide](vitis_adc_platform_pps_trigger.md).
+The current HLS kernel reads ADC_D, ADC_C, ADC_B, and ADC_A in lockstep, triggers on a rising edge from `PPS_TRIG_AXIS`, and writes all four ADC channels to memory with about 20% pretrigger and 80% post-trigger samples. The static Vivado platform details for the PPS adapter and ILA are described in the [external PPS trigger guide](vitis_adc_platform_pps_trigger.md).
 
 ## Workspace for This Rebuild
 These instructions use a fresh Linux workspace:
@@ -45,7 +43,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - The Vivado project is named `rfsoc_adc_hardware`.
    - ADC tiles 0 and 2 are enabled with converter sampling rate set to 4.9152 GSps and decimation set to 8, giving 614.4 MS/s on each exported real ADC stream.
    - `m00_axis`, `m02_axis`, `m20_axis`, and `m22_axis` are exported for the four-stream dummy kernel. Each AXI4-Stream beat contains eight consecutive signed 16-bit real samples.
-   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, and `RFDC_ADC_A_AXIS` for `m22_axis`.
+   - The Vitis platform stream tags are `RFDC_DATA_AXIS` for `m00_axis`, `RFDC_TRIG_AXIS` for `m02_axis`, `RFDC_ADC_B_AXIS` for `m20_axis`, `RFDC_ADC_A_AXIS` for `m22_axis`, and `PPS_TRIG_AXIS` for the PPS trigger adapter.
    - Tile 0 `clk_adc0` is the common RFDC AXI4-Stream clock and is exported as fixed platform clock ID `3`. Both `m0_axis_aclk` and `m2_axis_aclk` use this `76.8 MHz` clock, so all four streams can feed one `II=1` HLS capture loop without an inserted clock-domain crossing. Tile 2 `clk_adc2` remains exported as fixed clock ID `4` for later use.
 
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
@@ -63,7 +61,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    m2_axis_aclk net = usp_rf_data_converter_0_clk_adc0
    PFM clk_adc0 = id 3, status fixed, freq_hz 76800000
    PFM clk_adc2 = id 4, status fixed, freq_hz 76800000
-   CHECK PASSED: four 614.4 MS/s ADC streams use 8 samples/word on common clk_adc0 and exported RFDC tags are present
+   CHECK PASSED: four 614.4 MS/s ADC streams plus PPS_TRIG_AXIS and PPS ILA use common clk_adc0
    ```
    This check does not require synthesis or implementation.
 
@@ -303,13 +301,13 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      - `trigger_in`: ADC_C stream connected to `RFDC_TRIG_AXIS`.
      - `adc_b_in`: ADC_B stream connected to `RFDC_ADC_B_AXIS`.
      - `adc_a_in`: ADC_A stream connected to `RFDC_ADC_A_AXIS`.
+     - `ext_trigger_in`: external PPS trigger stream connected to `PPS_TRIG_AXIS`.
      - `size`: number of 128-bit AXI4-Stream words to capture from each stream. The current kernel requires `2048`.
      - `output_words`: number of packed 512-bit output words available in `buffer0`.
-     - `trigger_threshold`: signed 16-bit ADC_C threshold used by the FPGA trigger. To keep the capture path at one word per cycle, the threshold detector checks one fixed ADC_C sample lane per 128-bit AXI4-Stream word. Trigger timing is therefore quantized to eight ADC samples.
-     The host code sets `size` as kernel argument index `5`, because the four AXIS inputs precede the scalar arguments.
-     The kernel continuously writes all four streams into one full-frame circular UltraRAM buffer through one uninterrupted `II=1` acquisition loop. After the ADC_C threshold crossing and the 80% post-trigger interval, it freezes the ring and copies the chronological 2048-word waveform to DDR as packed 512-bit words.
+     The host code sets `size` as kernel argument index `6`, because the five AXIS inputs precede the scalar arguments.
+     The kernel continuously writes all four ADC streams into one full-frame circular UltraRAM buffer through one uninterrupted `II=1` acquisition loop. After a rising edge on `PPS_TRIG_AXIS` and the 80% post-trigger interval, it freezes the ring and copies the chronological 2048-word waveform to DDR as packed 512-bit words.
 
-3. Configure the hardware link for the four RFDC streams:
+3. Configure the hardware link for the four RFDC streams plus PPS trigger stream:
    - Open `test_adc_system_hw_link/test_adc_system_hw_link.prj` from the **<em>Explorer</em>**.
    - Under **<em>Hardware Functions</em>**, right-click `dummy_kernel` and select **<em>Edit V++ Options...</em>**.
    - Remove any old connectivity lines that mention `RFDC_AXIS` or `dummy_kernel_1.s_in`.
@@ -323,11 +321,12 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      stream_connect = RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
      stream_connect = RFDC_ADC_B_AXIS:dummy_kernel_1.adc_b_in
      stream_connect = RFDC_ADC_A_AXIS:dummy_kernel_1.adc_a_in
+     stream_connect = PPS_TRIG_AXIS:dummy_kernel_1.ext_trigger_in
      ```
    - Click the `Apply and Close` button.
-   - If Vitis assigned a different compute-unit name than `dummy_kernel_1`, use the exact instance name shown under **<em>Hardware Functions</em>** in all four `stream_connect` lines.
-   - If the link step reports that clock ID `3` or an `RFDC_*_AXIS` tag cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`. Clock ID `3` is the common RFDC stream clock, tile 0 `clk_adc0`, at `76.8 MHz`.
-   - If the link step reports that an input such as `adc_b_in` cannot be found, the HLS component is still using an older `dummy_kernel.cpp`; replace the source again and clean/rebuild the application.
+   - If Vitis assigned a different compute-unit name than `dummy_kernel_1`, use the exact instance name shown under **<em>Hardware Functions</em>** in all five `stream_connect` lines.
+   - If the link step reports that clock ID `3`, an `RFDC_*_AXIS`, or `PPS_TRIG_AXIS` tag cannot be found, rebuild the Vivado design, re-export the `.xsa`, and regenerate the Vitis platform from the new `.xsa`. Clock ID `3` is the common RFDC stream clock, tile 0 `clk_adc0`, at `76.8 MHz`.
+   - If the link step reports that an input such as `adc_b_in` or `ext_trigger_in` cannot be found, the HLS component is still using an older `dummy_kernel.cpp`; replace the source again and clean/rebuild the application.
    - If the `cfgen` command line still contains `-sc RFDC_AXIS:dummy_kernel_1.s_in`, the old V++ connectivity is still present. Remove that line from the hardware-link V++ options and clean the hardware-link build directory before rebuilding.
 
 4. Configure packaging and build:
@@ -354,19 +353,20 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - Clean the system project if this workspace previously built the single-stream design.
    - Click the :hammer: button on the tool bar to build the project.
    - After rebuilding, verify that the generated HLS report targets `76.8 MHz`. For example, a roughly 2048-cycle `write_triggered_waveform` pipeline should report approximately `26.67 us`.
-   - The Vitis-generated block design should connect all four exported RFDC streams directly to the corresponding `dummy_kernel_1` inputs.
-   - After the build completes, verify that the generated `xclbin` contains the four-stream kernel:
+   - The Vitis-generated block design should connect all four exported RFDC streams and `PPS_TRIG_AXIS` directly to the corresponding `dummy_kernel_1` inputs.
+   - After the build completes, verify that the generated `xclbin` contains the five-stream kernel:
      ```shell
      xclbinutil --info --input \
        /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin | \
-       grep -E "data_in|trigger_in|adc_b_in|adc_a_in|dummy_kernel"
+       grep -E "data_in|trigger_in|adc_b_in|adc_a_in|ext_trigger_in|PPS_TRIG_AXIS|dummy_kernel"
      ```
-     The output should show the `dummy_kernel` signature with all four AXI4-Stream arguments, and the command line should include:
+     The output should show the `dummy_kernel` signature with all five AXI4-Stream arguments, and the command line should include:
      ```
      --connectivity.stream_connect RFDC_DATA_AXIS:dummy_kernel_1.data_in
      --connectivity.stream_connect RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
      --connectivity.stream_connect RFDC_ADC_B_AXIS:dummy_kernel_1.adc_b_in
      --connectivity.stream_connect RFDC_ADC_A_AXIS:dummy_kernel_1.adc_a_in
+     --connectivity.stream_connect PPS_TRIG_AXIS:dummy_kernel_1.ext_trigger_in
      ```
    - The files to deploy after a Vitis build are generated under:
      ```shell
@@ -525,7 +525,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    Loading: 'dummy_kernel.xclbin'
    Trying to program device[0]: edge
    Device[0]: program successful!
-   FPGA threshold trigger on RFDC_TRIG_AXIS/ADC_C at 1000 ADC counts
+   External PPS trigger on PPS_TRIG_AXIS rising edge
    Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A
    Trigger word is near sample 3272 of 16384 per-channel samples
    Waiting for trigger for frame 0
@@ -539,18 +539,11 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    tail wave.txt
    grep -v '^0 0 0 0$' wave.txt | head
    ```
-   This build implements FPGA-side threshold triggering on ADC_C/RFDC_TRIG_AXIS. By default the threshold is `1000` ADC counts. Override it from the board command line, for example:
-   ```shell
-   ./test_adc dummy_kernel.xclbin --threshold 2000
-   ```
    `wave.txt` and the Ethernet stream contain four columns/channels: `RFDC_DATA_AXIS`/ADC_D, `RFDC_TRIG_AXIS`/ADC_C, `RFDC_ADC_B_AXIS`/ADC_B, and `RFDC_ADC_A_AXIS`/ADC_A. Each frame contains about 20% pretrigger and 80% post-trigger samples; for the default frame size, the trigger word is near sample `3272`.
 
-   The FPGA trigger decision uses only `ADC_C`/`RFDC_TRIG_AXIS`. A passive splitter reduces the signal amplitude at both outputs, so a split signal may not cross the default threshold even when both outputs are visible on an oscilloscope. To test the capture path with an AC-coupled sine wave, lower the rising-edge threshold to zero:
-   ```shell
-   ./test_adc dummy_kernel.xclbin --threshold 0
-   ```
+   The FPGA trigger decision uses only `PPS_TRIG_AXIS`. Drive the board `1PPS` SMA with a valid pulse before expecting the app to complete. The Vivado-only ILA test above used a `3.3 Vpp` square wave and confirmed `pps_trigger_sync_level` toggles.
 
-   If the program stops after `Waiting for trigger for frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for ADC_C/RFDC_TRIG_AXIS to cross the configured threshold. Lower `--threshold`, confirm the signal on ADC_C, and confirm all four RFDC streams are running. Recheck the reference clock setup above and inspect the XRT logs:
+   If the program stops after `Waiting for trigger for frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for a rising edge on `PPS_TRIG_AXIS`. Confirm the PPS pulse at the SMA, re-arm the PPS ILA, and check that `pps_trigger_axis_ready` goes high while the kernel is running. Recheck the reference clock setup above and inspect the XRT logs:
    ```shell
    dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
    dmesg | tail -80
@@ -585,7 +578,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    Then run the sender on the board, replacing `192.168.2.1` with the PC Ethernet IP address:
    ```shell
    cd /run/media/boot-mmcblk0p1/
-   ./test_adc dummy_kernel.xclbin --tcp 192.168.2.1 5000 --rate 60 --frames 0
+   ./test_adc dummy_kernel.xclbin --tcp 192.168.2.1 5000 --rate 1000 --frames 0
    ```
    Use `--frames 600` instead of `--frames 0` to send ten seconds of data at 60 Hz. UDP is also supported; start the receiver with `--mode udp` and run the board application with `--udp 192.168.2.1 5000`. UDP frames are split into smaller packets and reassembled by the Python receiver. The PC stream contains all four ADC channels.
 
@@ -593,7 +586,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    ![2 MHz sinusoid](Figures/sin2M.png) 
 
 ## Validate the Four-Channel Hardware Build
-Complete this test before adding the external PPS trigger. The current build still uses an ADC_C threshold crossing as the FPGA trigger. The purpose of this test is to verify sample continuity and measure whether the cross-tile behavior is sufficient before deciding whether RFDC multi-tile synchronization is required.
+Complete this test after the PPS-enabled Vitis build. The purpose is to verify sample continuity and measure whether the cross-tile behavior is sufficient before deciding whether RFDC multi-tile synchronization is required.
 
 1. For the first boot of this static hardware build, copy the complete generated SD-card directory to the FAT32 boot partition:
 
@@ -620,7 +613,7 @@ Complete this test before adding the external PPS trigger. The current build sti
    /dev/spidev0.2
    ```
 
-3. Apply the same `1 MHz` sine wave to all four ADC inputs using a suitable splitter or distribution amplifier and matched cables. Verify every splitter output with an oscilloscope. ADC_C must receive the signal because it still supplies the FPGA threshold trigger.
+3. Apply the same `1 MHz` sine wave to all four ADC inputs using a suitable splitter or distribution amplifier and matched cables. Verify every splitter output with an oscilloscope. Also drive the board `1PPS` SMA with a valid pulse so the external trigger can fire.
 
    | ADC input | Captured column | RFDC tile |
    |---|---|---|
@@ -629,12 +622,12 @@ Complete this test before adding the external PPS trigger. The current build sti
    | ADC_B | `RFDC_ADC_B_AXIS/ADC_B` | Tile 2 |
    | ADC_A | `RFDC_ADC_A_AXIS/ADC_A` | Tile 2 |
 
-4. Run one capture with a zero-crossing threshold. This avoids false failures caused by splitter attenuation:
+4. Run one capture. The capture will complete on the next rising edge of `PPS_TRIG_AXIS`:
 
    ```shell
    cd /run/media/boot-mmcblk0p1/
    chmod +x test_adc
-   ./test_adc dummy_kernel.xclbin --threshold 0
+   ./test_adc dummy_kernel.xclbin
    ```
 
 5. Confirm that `wave.txt` has `16384` rows and four columns:
@@ -693,7 +686,6 @@ Complete this test before adding the external PPS trigger. The current build sti
 
    for i in $(seq -w 1 10); do
      ./test_adc dummy_kernel.xclbin \
-       --threshold 0 \
        --wave /home/root/four_channel_runs/before_power_cycle/wave_${i}.txt || break
    done
    ```
@@ -706,7 +698,6 @@ Complete this test before adding the external PPS trigger. The current build sti
 
     for i in $(seq -w 1 10); do
       ./test_adc dummy_kernel.xclbin \
-        --threshold 0 \
         --wave /home/root/four_channel_runs/after_power_cycle/wave_${i}.txt || break
     done
     ```

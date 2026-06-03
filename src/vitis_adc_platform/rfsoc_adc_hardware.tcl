@@ -763,12 +763,11 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   set ila_pps_trigger [ create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_pps_trigger ]
   set_property -dict [list \
     CONFIG.C_DATA_DEPTH {1024} \
-    CONFIG.C_NUM_OF_PROBES {5} \
+    CONFIG.C_NUM_OF_PROBES {4} \
     CONFIG.C_PROBE0_WIDTH {1} \
     CONFIG.C_PROBE1_WIDTH {1} \
     CONFIG.C_PROBE2_WIDTH {1} \
     CONFIG.C_PROBE3_WIDTH {1} \
-    CONFIG.C_PROBE4_WIDTH {1} \
   ] $ila_pps_trigger
 
 
@@ -790,9 +789,8 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   connect_bd_net -net clk_wiz_0_clk_out1 [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins proc_sys_reset_clk_out200M/slowest_sync_clk]
   connect_bd_net -net clk_wiz_0_clk_out2 [get_bd_pins clk_wiz_0/clk_out2] [get_bd_pins proc_sys_reset_clk_out400M/slowest_sync_clk]
   connect_bd_net -net clk_wiz_0_locked [get_bd_pins clk_wiz_0/locked] [get_bd_pins proc_sys_reset_clk_out200M/dcm_locked] [get_bd_pins proc_sys_reset_clk_out400M/dcm_locked]
-  connect_bd_net -net proc_sys_reset_clk_adc0_peripheral_aresetn [get_bd_pins proc_sys_reset_clk_adc0/peripheral_aresetn] [get_bd_pins usp_rf_data_converter_0/m0_axis_aresetn] [get_bd_pins usp_rf_data_converter_0/m2_axis_aresetn] [get_bd_pins pps_trigger_axis_0/aresetn] [get_bd_pins ila_pps_trigger/probe4]
+  connect_bd_net -net proc_sys_reset_clk_adc0_peripheral_aresetn [get_bd_pins proc_sys_reset_clk_adc0/peripheral_aresetn] [get_bd_pins usp_rf_data_converter_0/m0_axis_aresetn] [get_bd_pins usp_rf_data_converter_0/m2_axis_aresetn] [get_bd_pins pps_trigger_axis_0/aresetn] [get_bd_pins ila_pps_trigger/probe3]
   connect_bd_net -net pps_trigger_axis_level [get_bd_pins pps_trigger_axis_0/dbg_axis_level] [get_bd_pins ila_pps_trigger/probe1]
-  connect_bd_net -net pps_trigger_axis_ready [get_bd_pins pps_trigger_axis_0/m_axis_tready] [get_bd_pins ila_pps_trigger/probe3]
   connect_bd_net -net pps_trigger_axis_valid [get_bd_pins pps_trigger_axis_0/dbg_axis_valid] [get_bd_pins ila_pps_trigger/probe2]
   connect_bd_net -net pps_trigger_sync_level [get_bd_pins pps_trigger_axis_0/dbg_pps_sync_level] [get_bd_pins ila_pps_trigger/probe0]
   connect_bd_net -net usp_rf_data_converter_0_clk_adc0 [get_bd_pins usp_rf_data_converter_0/clk_adc0] [get_bd_pins proc_sys_reset_clk_adc0/slowest_sync_clk] [get_bd_pins usp_rf_data_converter_0/m0_axis_aclk] [get_bd_pins usp_rf_data_converter_0/m2_axis_aclk] [get_bd_pins pps_trigger_axis_0/aclk] [get_bd_pins ila_pps_trigger/clk]

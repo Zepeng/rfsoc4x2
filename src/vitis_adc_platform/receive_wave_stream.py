@@ -18,10 +18,10 @@ UDP_MAGIC_V1 = b"RFU1"
 UDP_MAGIC_V2 = b"RFU2"
 UDP_MAGIC_V3 = b"RFU3"
 CHANNEL_LABELS = (
-    "RFDC_DATA_AXIS/ADC_D",
-    "RFDC_TRIG_AXIS/ADC_C",
-    "RFDC_ADC_B_AXIS/ADC_B",
-    "RFDC_ADC_A_AXIS/ADC_A",
+    "ADC_D",
+    "ADC_C",
+    "ADC_B",
+    "ADC_A",
 )
 
 
