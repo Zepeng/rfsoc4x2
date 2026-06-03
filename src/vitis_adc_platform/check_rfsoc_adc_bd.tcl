@@ -76,6 +76,14 @@ set rfdc [get_bd_cells -quiet /usp_rf_data_converter_0]
 if {[llength $rfdc] == 0} {
   fail "RFDC cell /usp_rf_data_converter_0 was not found"
 }
+set pps [get_bd_cells -quiet /pps_trigger_axis_0]
+if {[llength $pps] == 0} {
+  fail "PPS trigger adapter cell /pps_trigger_axis_0 was not found"
+}
+set pps_ila [get_bd_cells -quiet /ila_pps_trigger]
+if {[llength $pps_ila] == 0} {
+  fail "PPS ILA cell /ila_pps_trigger was not found"
+}
 
 puts "current BD = [current_bd_design]"
 set slice00 [print_prop $rfdc CONFIG.ADC_Slice00_Enable]
@@ -100,7 +108,9 @@ set type20 [print_prop $rfdc CONFIG.ADC_Data_Type20]
 set type22 [print_prop $rfdc CONFIG.ADC_Data_Type22]
 set rfdc_clocks [print_prop $rfdc PFM.CLOCK]
 set axis_ports [print_prop $rfdc PFM.AXIS_PORT]
+set pps_axis_ports [print_prop $pps PFM.AXIS_PORT]
 
+set irig_ports [llength [get_bd_ports -quiet IRIG_TRIG_OUT]]
 set vin0_01_ports [llength [get_bd_intf_ports -quiet vin0_01]]
 set vin0_23_ports [llength [get_bd_intf_ports -quiet vin0_23]]
 set vin2_01_ports [llength [get_bd_intf_ports -quiet vin2_01]]
@@ -115,10 +125,17 @@ set m20_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m20
 set m22_axis_pins [llength [get_bd_intf_pins -quiet /usp_rf_data_converter_0/m22_axis]]
 set m0_axis_aclk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /usp_rf_data_converter_0/m0_axis_aclk]]]
 set m2_axis_aclk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /usp_rf_data_converter_0/m2_axis_aclk]]]
+set pps_aclk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/aclk]]]
+set pps_aresetn_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/aresetn]]]
+set pps_in_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/pps_in]]]
+set pps_in_ports [get_bd_ports -quiet -of_objects [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/pps_in]]]
+set pps_ila_clk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/clk]]]
+set pps_ila_probes [print_prop $pps_ila CONFIG.C_NUM_OF_PROBES]
 set pfm_m00_tag ""
 set pfm_m02_tag ""
 set pfm_m20_tag ""
 set pfm_m22_tag ""
+set pfm_pps_tag ""
 set pfm_clk_adc0_id ""
 set pfm_clk_adc0_status ""
 set pfm_clk_adc0_freq ""
@@ -162,6 +179,17 @@ if {$axis_ports ne ""} {
   }
 }
 
+if {$pps_axis_ports ne ""} {
+  if {[catch {
+    if {[dict exists $pps_axis_ports m_axis]} {
+      set pfm_pps_tag [dict get [dict get $pps_axis_ports m_axis] sptag]
+    }
+  } pfm_err]} {
+    puts "ERROR: Could not parse PPS PFM.AXIS_PORT: $pfm_err"
+  }
+}
+
+puts "IRIG_TRIG_OUT external port count = $irig_ports"
 puts "vin0_01 external port count = $vin0_01_ports"
 puts "vin0_23 external port count = $vin0_23_ports"
 puts "vin2_01 external port count = $vin2_01_ports"
@@ -176,14 +204,25 @@ puts "m20_axis RFDC pin count = $m20_axis_pins"
 puts "m22_axis RFDC pin count = $m22_axis_pins"
 puts "m0_axis_aclk net = $m0_axis_aclk_net"
 puts "m2_axis_aclk net = $m2_axis_aclk_net"
+puts "pps_trigger_axis_0/aclk net = $pps_aclk_net"
+puts "pps_trigger_axis_0/aresetn net = $pps_aresetn_net"
+puts "pps_trigger_axis_0/pps_in net = $pps_in_net"
+puts "pps_trigger_axis_0/pps_in external port = $pps_in_ports"
+puts "ila_pps_trigger/clk net = $pps_ila_clk_net"
+puts "ila_pps_trigger probe count = $pps_ila_probes"
 puts "PFM m00_axis sptag = $pfm_m00_tag"
 puts "PFM m02_axis sptag = $pfm_m02_tag"
 puts "PFM m20_axis sptag = $pfm_m20_tag"
 puts "PFM m22_axis sptag = $pfm_m22_tag"
+puts "PFM PPS m_axis sptag = $pfm_pps_tag"
 puts "PFM clk_adc0 = id $pfm_clk_adc0_id, status $pfm_clk_adc0_status, freq_hz $pfm_clk_adc0_freq"
 puts "PFM clk_adc2 = id $pfm_clk_adc2_id, status $pfm_clk_adc2_status, freq_hz $pfm_clk_adc2_freq"
 
 set failures 0
+if {$irig_ports != 1} {
+  puts "ERROR: Expected one external IRIG_TRIG_OUT port"
+  incr failures
+}
 if {$slice00 ne "true"} {
   puts "ERROR: Expected CONFIG.ADC_Slice00_Enable to be true"
   incr failures
@@ -279,6 +318,22 @@ if {$m2_axis_aclk_net ne "usp_rf_data_converter_0_clk_adc0"} {
   puts "ERROR: Expected m2_axis_aclk to use common stream clock usp_rf_data_converter_0_clk_adc0"
   incr failures
 }
+if {$pps_aclk_net ne "usp_rf_data_converter_0_clk_adc0"} {
+  puts "ERROR: Expected PPS trigger adapter to use common stream clock usp_rf_data_converter_0_clk_adc0"
+  incr failures
+}
+if {$pps_ila_clk_net ne "usp_rf_data_converter_0_clk_adc0"} {
+  puts "ERROR: Expected PPS ILA to use common stream clock usp_rf_data_converter_0_clk_adc0"
+  incr failures
+}
+if {$pps_aresetn_net ne "proc_sys_reset_clk_adc0_peripheral_aresetn"} {
+  puts "ERROR: Expected PPS trigger adapter reset to use proc_sys_reset_clk_adc0_peripheral_aresetn"
+  incr failures
+}
+if {[llength $pps_in_ports] != 1 || [get_property NAME [lindex $pps_in_ports 0]] ne "IRIG_TRIG_OUT"} {
+  puts "ERROR: Expected PPS trigger adapter input to be driven by IRIG_TRIG_OUT"
+  incr failures
+}
 if {$pfm_m00_tag ne "RFDC_DATA_AXIS"} {
   puts "ERROR: Expected m00_axis PFM sptag to be RFDC_DATA_AXIS"
   incr failures
@@ -293,6 +348,14 @@ if {$pfm_m20_tag ne "RFDC_ADC_B_AXIS"} {
 }
 if {$pfm_m22_tag ne "RFDC_ADC_A_AXIS"} {
   puts "ERROR: Expected m22_axis PFM sptag to be RFDC_ADC_A_AXIS"
+  incr failures
+}
+if {$pfm_pps_tag ne "PPS_TRIG_AXIS"} {
+  puts "ERROR: Expected PPS m_axis PFM sptag to be PPS_TRIG_AXIS"
+  incr failures
+}
+if {$pps_ila_probes ne "5"} {
+  puts "ERROR: Expected ila_pps_trigger to have 5 probes"
   incr failures
 }
 foreach {name value expected} [list \
@@ -322,5 +385,5 @@ if {$failures != 0} {
   exit 1
 }
 
-puts "CHECK PASSED: four 614.4 MS/s ADC streams use 8 samples/word on common clk_adc0 and exported RFDC tags are present"
+puts "CHECK PASSED: four 614.4 MS/s ADC streams plus PPS_TRIG_AXIS and PPS ILA use common clk_adc0"
 exit 0

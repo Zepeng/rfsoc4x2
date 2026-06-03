@@ -34,6 +34,13 @@
 # Check file required for this script exists
 proc checkRequiredFiles { origin_dir} {
   set status true
+  foreach req_file {pps_trigger_axis.v pps_trigger.xdc} {
+    set req_path [file normalize "$origin_dir/$req_file"]
+    if {![file exists $req_path]} {
+      puts "ERROR: Missing required file $req_path"
+      set status false
+    }
+  }
   return $status
 }
 
@@ -126,7 +133,7 @@ if { $::argc > 0 } {
 set orig_proj_dir "[file normalize "$origin_dir/"]"
 
 # Check for paths and files needed for project creation
-set validate_required 0
+set validate_required 1
 if { $validate_required } {
   if { [checkRequiredFiles $origin_dir] } {
     puts "Tcl file $script_file is valid. All files required for project creation is accesable. "
@@ -244,6 +251,9 @@ set obj [get_filesets sources_1]
 
 # Set 'sources_1' fileset file properties for local files
 # None
+set pps_trigger_axis_file [file normalize "$origin_dir/pps_trigger_axis.v"]
+add_files -norecurse -fileset sources_1 $pps_trigger_axis_file
+set_property -name "file_type" -value "Verilog" -objects [get_files $pps_trigger_axis_file]
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]
@@ -264,6 +274,7 @@ set_property -name "verilog_uppercase" -value "0" -objects $obj
 set_property -name "verilog_version" -value "verilog_2001" -objects $obj
 set_property -name "vhdl_define" -value "" -objects $obj
 set_property -name "vhdl_version" -value "vhdl_2k" -objects $obj
+update_compile_order -fileset sources_1
 
 # Create 'constrs_1' fileset (if not found)
 if {[string equal [get_filesets -quiet constrs_1] ""]} {
@@ -273,7 +284,7 @@ if {[string equal [get_filesets -quiet constrs_1] ""]} {
 # Set 'constrs_1' fileset object
 set obj [get_filesets constrs_1]
 
-# Empty (no sources present)
+add_files -norecurse -fileset constrs_1 [file normalize "$origin_dir/pps_trigger.xdc"]
 
 # Set 'constrs_1' fileset properties
 set obj [get_filesets constrs_1]
@@ -394,6 +405,7 @@ proc cr_bd_system { parentCell } {
   xilinx.com:ip:proc_sys_reset:5.0\
   xilinx.com:ip:axi_intc:4.1\
   xilinx.com:ip:xlconcat:2.1\
+  xilinx.com:ip:ila:6.2\
   xilinx.com:ip:usp_rf_data_converter:2.6\
   "
 
@@ -466,6 +478,7 @@ proc cr_bd_system { parentCell } {
 
 
   # Create ports
+  set IRIG_TRIG_OUT [ create_bd_port -dir I IRIG_TRIG_OUT ]
 
   # Create instance: zynq_ultra_ps_e_0, and set properties
   set zynq_ultra_ps_e_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 zynq_ultra_ps_e_0 ]
@@ -1594,6 +1607,21 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
     CONFIG.USE_BOARD_FLOW {true} \
   ] $proc_sys_reset_clk_out400M
 
+  # Create instance: pps_trigger_axis_0
+  set pps_trigger_axis_0 [ create_bd_cell -type module -reference pps_trigger_axis pps_trigger_axis_0 ]
+
+  # Create instance: ila_pps_trigger, and set properties
+  set ila_pps_trigger [ create_bd_cell -type ip -vlnv xilinx.com:ip:ila:6.2 ila_pps_trigger ]
+  set_property -dict [list \
+    CONFIG.C_DATA_DEPTH {1024} \
+    CONFIG.C_NUM_OF_PROBES {5} \
+    CONFIG.C_PROBE0_WIDTH {1} \
+    CONFIG.C_PROBE1_WIDTH {1} \
+    CONFIG.C_PROBE2_WIDTH {1} \
+    CONFIG.C_PROBE3_WIDTH {1} \
+    CONFIG.C_PROBE4_WIDTH {1} \
+  ] $ila_pps_trigger
+
 
   # Create interface connections
   connect_bd_intf_net -intf_net adc0_clk_1 [get_bd_intf_ports adc0_clk] [get_bd_intf_pins usp_rf_data_converter_0/adc0_clk]
@@ -1608,13 +1636,18 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   connect_bd_intf_net -intf_net zynq_ultra_ps_e_0_M_AXI_HPM0_LPD [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] [get_bd_intf_pins ps8_0_axi_periph/S00_AXI]
 
   # Create port connections
+  connect_bd_net -net IRIG_TRIG_OUT_1 [get_bd_ports IRIG_TRIG_OUT] [get_bd_pins pps_trigger_axis_0/pps_in]
   connect_bd_net -net axi_intc_0_irq [get_bd_pins axi_intc_0/irq] [get_bd_pins xlconcat_0/In0]
   connect_bd_net -net clk_wiz_0_clk_out1 [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins proc_sys_reset_clk_out200M/slowest_sync_clk] [get_bd_pins ps8_0_axi_periph/ACLK] [get_bd_pins ps8_0_axi_periph/S00_ACLK] [get_bd_pins ps8_0_axi_periph/M00_ACLK] [get_bd_pins ps8_0_axi_periph/M01_ACLK] [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_lpd_aclk] [get_bd_pins usp_rf_data_converter_0/s_axi_aclk] [get_bd_pins axi_intc_0/s_axi_aclk]
   connect_bd_net -net clk_wiz_0_clk_out2 [get_bd_pins clk_wiz_0/clk_out2] [get_bd_pins proc_sys_reset_clk_out400M/slowest_sync_clk]
   connect_bd_net -net clk_wiz_0_locked [get_bd_pins clk_wiz_0/locked] [get_bd_pins proc_sys_reset_clk_out200M/dcm_locked] [get_bd_pins proc_sys_reset_clk_out400M/dcm_locked]
-  connect_bd_net -net proc_sys_reset_clk_adc0_peripheral_aresetn [get_bd_pins proc_sys_reset_clk_adc0/peripheral_aresetn] [get_bd_pins usp_rf_data_converter_0/m0_axis_aresetn] [get_bd_pins usp_rf_data_converter_0/m2_axis_aresetn]
+  connect_bd_net -net proc_sys_reset_clk_adc0_peripheral_aresetn [get_bd_pins proc_sys_reset_clk_adc0/peripheral_aresetn] [get_bd_pins usp_rf_data_converter_0/m0_axis_aresetn] [get_bd_pins usp_rf_data_converter_0/m2_axis_aresetn] [get_bd_pins pps_trigger_axis_0/aresetn] [get_bd_pins ila_pps_trigger/probe4]
   connect_bd_net -net proc_sys_reset_clk_out200M_peripheral_aresetn [get_bd_pins proc_sys_reset_clk_out200M/peripheral_aresetn] [get_bd_pins ps8_0_axi_periph/ARESETN] [get_bd_pins ps8_0_axi_periph/S00_ARESETN] [get_bd_pins ps8_0_axi_periph/M00_ARESETN] [get_bd_pins ps8_0_axi_periph/M01_ARESETN] [get_bd_pins usp_rf_data_converter_0/s_axi_aresetn] [get_bd_pins axi_intc_0/s_axi_aresetn]
-  connect_bd_net -net usp_rf_data_converter_0_clk_adc0 [get_bd_pins usp_rf_data_converter_0/clk_adc0] [get_bd_pins proc_sys_reset_clk_adc0/slowest_sync_clk] [get_bd_pins usp_rf_data_converter_0/m0_axis_aclk] [get_bd_pins usp_rf_data_converter_0/m2_axis_aclk]
+  connect_bd_net -net pps_trigger_axis_level [get_bd_pins pps_trigger_axis_0/dbg_axis_level] [get_bd_pins ila_pps_trigger/probe1]
+  connect_bd_net -net pps_trigger_axis_ready [get_bd_pins pps_trigger_axis_0/m_axis_tready] [get_bd_pins ila_pps_trigger/probe3]
+  connect_bd_net -net pps_trigger_axis_valid [get_bd_pins pps_trigger_axis_0/dbg_axis_valid] [get_bd_pins ila_pps_trigger/probe2]
+  connect_bd_net -net pps_trigger_sync_level [get_bd_pins pps_trigger_axis_0/dbg_pps_sync_level] [get_bd_pins ila_pps_trigger/probe0]
+  connect_bd_net -net usp_rf_data_converter_0_clk_adc0 [get_bd_pins usp_rf_data_converter_0/clk_adc0] [get_bd_pins proc_sys_reset_clk_adc0/slowest_sync_clk] [get_bd_pins usp_rf_data_converter_0/m0_axis_aclk] [get_bd_pins usp_rf_data_converter_0/m2_axis_aclk] [get_bd_pins pps_trigger_axis_0/aclk] [get_bd_pins ila_pps_trigger/clk]
   connect_bd_net -net usp_rf_data_converter_0_clk_adc2 [get_bd_pins usp_rf_data_converter_0/clk_adc2] [get_bd_pins proc_sys_reset_clk_adc2/slowest_sync_clk]
   connect_bd_net -net usp_rf_data_converter_0_irq [get_bd_pins usp_rf_data_converter_0/irq] [get_bd_pins xlconcat_0/In1]
   connect_bd_net -net xlconcat_0_dout [get_bd_pins xlconcat_0/dout] [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq0]
@@ -1680,6 +1713,7 @@ pagesize -pg 1 -db -bbox -sgen -120 0 1800 1000
   set_property PFM.AXI_PORT {M02_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M03_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M04_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M05_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M06_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M07_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M08_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M09_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M10_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M11_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M12_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M13_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M14_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M15_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M16_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M17_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"}} [get_bd_cells /ps8_0_axi_periph]
   set_property PFM.CLOCK {clk_adc0 {id "3" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc0" status "fixed" freq_hz "76800000"} clk_adc2 {id "4" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc2" status "fixed" freq_hz "76800000"}} [get_bd_cells /usp_rf_data_converter_0]
   set_property PFM.AXIS_PORT {m00_axis {type "M_AXIS" sptag "RFDC_DATA_AXIS" is_range "false"} m02_axis {type "M_AXIS" sptag "RFDC_TRIG_AXIS" is_range "false"} m20_axis {type "M_AXIS" sptag "RFDC_ADC_B_AXIS" is_range "false"} m22_axis {type "M_AXIS" sptag "RFDC_ADC_A_AXIS" is_range "false"}} [get_bd_cells /usp_rf_data_converter_0]
+  set_property PFM.AXIS_PORT {m_axis {type "M_AXIS" sptag "PPS_TRIG_AXIS" is_range "false"}} [get_bd_cells /pps_trigger_axis_0]
 
 
   validate_bd_design
@@ -1703,13 +1737,15 @@ set_property USED_IN_IMPLEMENTATION "1" [get_files system.bd ]
 set_property USED_IN_SIMULATION "1" [get_files system.bd ] 
 set_property USED_IN_SYNTHESIS "1" [get_files system.bd ] 
 
-#call make_wrapper to create wrapper files
-if { [get_property IS_LOCKED [ get_files -norecurse [list system.bd]] ] == 1  } {
-  import_files -fileset sources_1 [file normalize "${origin_dir}/rfsoc_adc_hardware.gen/sources_1/bd/system/hdl/system_wrapper.v" ]
-} else {
-  set wrapper_path [make_wrapper -fileset sources_1 -files [ get_files -norecurse [list system.bd]] -top]
-  add_files -norecurse -fileset sources_1 $wrapper_path
+# Generate block-design output products and add the top HDL wrapper.
+set system_bd_file [get_files -norecurse [list system.bd]]
+generate_target all $system_bd_file
+set wrapper_path [make_wrapper -fileset sources_1 -files $system_bd_file -top]
+foreach wrapper_file $wrapper_path {
+  add_files -norecurse -fileset sources_1 $wrapper_file
 }
+set_property -name "top" -value "system_wrapper" -objects [get_filesets sources_1]
+update_compile_order -fileset sources_1
 
 
 set idrFlowPropertiesConstraints ""

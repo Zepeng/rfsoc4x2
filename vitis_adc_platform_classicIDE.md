@@ -19,6 +19,8 @@ Copy the updated project files from this repository into the workspace before re
 ```shell
 export REPO=/path/to/rfsoc4x2
 cp "$REPO/src/vitis_adc_platform/rfsoc_adc_hardware.tcl" "$WORKSPACE/"
+cp "$REPO/src/vitis_adc_platform/pps_trigger_axis.v" "$WORKSPACE/"
+cp "$REPO/src/vitis_adc_platform/pps_trigger.xdc" "$WORKSPACE/"
 cp "$REPO/src/vitis_adc_platform/check_rfsoc_adc_bd.tcl" "$WORKSPACE/"
 cp "$REPO/src/vitis_adc_platform/dummy_kernel.cpp" "$WORKSPACE/"
 cp "$REPO/src/vitis_adc_platform/host.cpp" "$WORKSPACE/"
