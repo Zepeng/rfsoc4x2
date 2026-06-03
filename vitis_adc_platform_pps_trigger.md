@@ -232,7 +232,7 @@ Copy `pps_trigger_axis.v` and `pps_trigger.xdc` next to the hardware Tcl before
 sourcing it:
 
 ```shell
-export WORKSPACE=/home/neutrino/workspace_4ch
+export WORKSPACE=/path/to/workspace_4ch
 export REPO=/path/to/rfsoc4x2
 cp "$REPO/src/vitis_adc_platform/rfsoc_adc_hardware.tcl" "$WORKSPACE/"
 cp "$REPO/src/vitis_adc_platform/pps_trigger_axis.v" "$WORKSPACE/"
@@ -249,7 +249,7 @@ Unable to resolve module-source based on inputs: pps_trigger_axis
 
 then the workspace is using an older hardware Tcl/source set, or Vivado is reopening a
 partially generated failed project. Re-copy the files above, then delete or rename the
-generated `/home/neutrino/workspace_4ch/rfsoc_adc_hardware` project directory before
+generated `/path/to/workspace_4ch/rfsoc_adc_hardware` project directory before
 rerunning `vivado -source rfsoc_adc_hardware.tcl`. The updated Tcl adds
 `pps_trigger_axis.v` to `sources_1`, marks it as Verilog, and updates the compile order
 before creating `pps_trigger_axis_0`.
@@ -319,9 +319,9 @@ before rebuilding the application.
 Before implementation, run the block-design checker from the workspace:
 
 ```shell
-cd /home/neutrino/workspace_4ch
+cd /path/to/workspace_4ch
 vivado -mode batch -source check_rfsoc_adc_bd.tcl \
-  -tclargs --hardware_tcl /home/neutrino/workspace_4ch/rfsoc_adc_hardware.tcl
+  -tclargs --hardware_tcl /path/to/workspace_4ch/rfsoc_adc_hardware.tcl
 ```
 
 The check should end with:
@@ -334,7 +334,7 @@ Confirm common RFDC clock id `3` is fixed at **76.8 MHz**:
 
 ```shell
 platforminfo -v -p \
-  /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm |
+  /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm |
   sed -n '/Clock Information/,/Memory Information/p'
 ```
 
@@ -342,7 +342,7 @@ Confirm the new stream tag exists:
 
 ```shell
 grep -Rni "PPS_TRIG_AXIS" \
-  /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform
+  /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform
 ```
 
 Do not continue if clock id `3` is missing/scaled or `PPS_TRIG_AXIS` is absent.
@@ -479,7 +479,7 @@ Because the static platform changed:
 1. Recreate the Vivado project from the updated hardware Tcl:
 
    ```shell
-   cd /home/neutrino/workspace_4ch
+   cd /path/to/workspace_4ch
    if [ -d rfsoc_adc_hardware ]; then mv rfsoc_adc_hardware rfsoc_adc_hardware.failed.$(date +%s); fi
    vivado -source rfsoc_adc_hardware.tcl
    ```
@@ -491,7 +491,7 @@ Because the static platform changed:
    wait_on_run impl_1
    open_run impl_1
    write_hw_platform -fixed -include_bit -force \
-     /home/neutrino/workspace_4ch/rfsoc_adc_hardware/rfsoc_adc_hardware.xsa
+     /path/to/workspace_4ch/rfsoc_adc_hardware/rfsoc_adc_hardware.xsa
    ```
 
 3. Regenerate and rebuild the Vitis platform from the new `.xsa`. Then verify the
@@ -504,7 +504,7 @@ Because the static platform changed:
 
    ```shell
    xclbinutil --info --input \
-     /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin | \
+     /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin | \
      grep -E "data_in|trigger_in|adc_b_in|adc_a_in|ext_trigger_in|PPS_TRIG_AXIS|dummy_kernel"
    ```
 
@@ -513,7 +513,7 @@ Because the static platform changed:
    adapter and ILA are part of the static hardware image:
 
    ```shell
-   sudo cp /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/* /path/to/mounted/boot/
+   sudo cp /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/* /path/to/mounted/boot/
    sync
    ```
 

@@ -7,7 +7,7 @@ The current HLS kernel reads ADC_D, ADC_C, ADC_B, and ADC_A in lockstep, trigger
 These instructions use a fresh Linux workspace:
 
 ```shell
-export WORKSPACE=/home/neutrino/workspace_4ch
+export WORKSPACE=/path/to/workspace_4ch
 mkdir -p "$WORKSPACE"
 cd "$WORKSPACE"
 ```
@@ -24,16 +24,16 @@ cp "$REPO/src/vitis_adc_platform/dummy_kernel.cpp" "$WORKSPACE/"
 cp "$REPO/src/vitis_adc_platform/host.cpp" "$WORKSPACE/"
 ```
 
-After Vitis creates the `test_adc` projects, copy `dummy_kernel.cpp` into `test_adc_kernels/src/` and `host.cpp` into `test_adc/src/`, or replace those files through the Vitis GUI as described below. All XSCT and Vitis commands in this guide use `/home/neutrino/workspace_4ch`; do not mix it with an older workspace because Vitis can reuse stale platform clock and stream metadata.
+After Vitis creates the `test_adc` projects, copy `dummy_kernel.cpp` into `test_adc_kernels/src/` and `host.cpp` into `test_adc/src/`, or replace those files through the Vitis GUI as described below. All XSCT and Vitis commands in this guide use `/path/to/workspace_4ch`; do not mix it with an older workspace because Vitis can reuse stale platform clock and stream metadata.
 
 ## Step 0: Install the RFSoC4x2 board files
 If not already installed, follow [Steps 0.1 and 0.2 in the previous experiment](./vitis_base_platform.md#step-0-install-the-rfsoc4x2-board-files-and-xilinxs-repos) to install the RFSoC board files. There is no need to install the Xilinx's device tree repo and the ZYNQMP common image here. We will use [Petalinux](https://www.xilinx.com/products/design-tools/embedded-software/petalinux-sdk.html#tools) to generate a new image and a device tree. 
 
 ## Step 1: Create a Vivado Hardware Design
-1. Download the TCL script [rfsoc_adc_hardware.tcl](src/vitis_adc_platform/rfsoc_adc_hardware.tcl) to `/home/neutrino/workspace_4ch`.
+1. Download the TCL script [rfsoc_adc_hardware.tcl](src/vitis_adc_platform/rfsoc_adc_hardware.tcl) to `/path/to/workspace_4ch`.
 2. Open Vivado and source the TCL script in a TCL shell, or simply do
    ```bash
-   cd /home/neutrino/workspace_4ch
+   cd /path/to/workspace_4ch
    vivado -source rfsoc_adc_hardware.tcl
    ```
    to generate the following block design:
@@ -49,7 +49,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
 3. Before running synthesis, optionally verify the block design and Vitis platform metadata in batch mode. From a checkout of this repository, run:
    ```bash
    vivado -mode batch -source /path/to/rfsoc4x2/src/vitis_adc_platform/check_rfsoc_adc_bd.tcl \
-     -tclargs --hardware_tcl /home/neutrino/workspace_4ch/rfsoc_adc_hardware.tcl
+     -tclargs --hardware_tcl /path/to/workspace_4ch/rfsoc_adc_hardware.tcl
    ```
    The checker creates a temporary project, sources `rfsoc_adc_hardware.tcl`, validates the block design, and should end with:
    ```
@@ -71,14 +71,14 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    wait_on_run impl_1
    open_run impl_1
    write_hw_platform -fixed -include_bit -force \
-     /home/neutrino/workspace_4ch/rfsoc_adc_hardware/rfsoc_adc_hardware.xsa
+     /path/to/workspace_4ch/rfsoc_adc_hardware/rfsoc_adc_hardware.xsa
    ```
    Vitis will not see the new RFDC `Data_Width=8`, `clk_adc0=76.8 MHz`, or stream metadata until the `.xsa` is regenerated from the updated Vivado design.
 
 ## Step 2: Use Petalinux to create boot files, device tree file, linux image, rootfs, and sysroot
 1. Create a Petalinux project: 
    ```shell
-   cd /home/neutrino/workspace_4ch
+   cd /path/to/workspace_4ch
    petalinux-create -t project --template zynqMP -n rfsoc-linux
    cd rfsoc-linux
    ```
@@ -89,7 +89,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - Select **<em>Image Packaging Configuration->Root filesystem type->EXT4</em>**
    - Exit and save configuration
 3. Add relevant libraries to rootfs:
-   - Add the following line to `/home/neutrino/workspace_4ch/rfsoc-linux/project-spec/meta-user/conf/user-rootfsconfig`:
+   - Add the following line to `/path/to/workspace_4ch/rfsoc-linux/project-spec/meta-user/conf/user-rootfsconfig`:
      ```
      CONFIG_rfdc
      ```
@@ -121,7 +121,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      - Select **<em>Device Drivers->SPI support->User mode SPI device driver support</em>** (select the * mark)
    - Exit and save
 5. Add device tree descriptions to enable access to the reference clock chips (LMK04828 and LMX2594) via SPI:
-   - Add the following lines to `/home/neutrino/workspace_4ch/rfsoc-linux/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi`:
+   - Add the following lines to `/path/to/workspace_4ch/rfsoc-linux/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi`:
      ```
      /include/ "system-conf.dtsi"
      / {
@@ -165,7 +165,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    cd images/linux
    ./sdk.sh -d .
    ```
-   - The boot files, device tree file, kernel image, and the EXT4 rootfs are generated in `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/`. The sysroot is in `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/sysroots/cortexa72-cortexa53-xilinx-linux`.
+   - The boot files, device tree file, kernel image, and the EXT4 rootfs are generated in `/path/to/workspace_4ch/rfsoc-linux/images/linux/`. The sysroot is in `/path/to/workspace_4ch/rfsoc-linux/images/linux/sysroots/cortexa72-cortexa53-xilinx-linux`.
 
    If you are only changing the PL RFDC stream export described in Step 1 and already have a working PetaLinux image for this platform, you can usually reuse it. Rebuild PetaLinux only when PS configuration, the address map, device tree requirements, kernel configuration, rootfs contents, or boot files change.
      
@@ -173,7 +173,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
 1. Create a Vitis Platform project:
  - Start `xsct`:
    ```shell
-   cd /home/neutrino/workspace_4ch
+   cd /path/to/workspace_4ch
    xsct
    ```
  - Once in the `xsct` terminal, execute the following commands to create a Vitis platform project:
@@ -190,9 +190,9 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    platform generate
    exit
    ```
-   The platform project is now created in `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform`.
+   The platform project is now created in `/path/to/workspace_4ch/rfsoc_adc_vitis_platform`.
 
-   If you previously built the single-stream version or a platform without RFDC clock IDs `3` and `4`, create a fresh platform project or delete the old `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform` first. This avoids Vitis using cached stream or clock metadata. After exporting a new `.xsa`, the Vitis platform must be regenerated before the application project is configured or rebuilt.
+   If you previously built the single-stream version or a platform without RFDC clock IDs `3` and `4`, create a fresh platform project or delete the old `/path/to/workspace_4ch/rfsoc_adc_vitis_platform` first. This avoids Vitis using cached stream or clock metadata. After exporting a new `.xsa`, the Vitis platform must be regenerated before the application project is configured or rebuilt.
 
 2. Copy `system.dtb` and boot files from the image generated by Petalinux in Step 2 above:
  - Make the following two directories for convenience:
@@ -202,58 +202,58 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    ```
  - Copy `system.dtb` and other boot files to the directories:
    ```shell
-   cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/system.dtb boot
-   cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/system.dtb fat32
-   cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/boot.scr fat32
-   cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/bl31.elf boot
-   cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/u-boot.elf boot
+   cp /path/to/workspace_4ch/rfsoc-linux/images/linux/system.dtb boot
+   cp /path/to/workspace_4ch/rfsoc-linux/images/linux/system.dtb fat32
+   cp /path/to/workspace_4ch/rfsoc-linux/images/linux/boot.scr fat32
+   cp /path/to/workspace_4ch/rfsoc-linux/images/linux/bl31.elf boot
+   cp /path/to/workspace_4ch/rfsoc-linux/images/linux/u-boot.elf boot
    ```
    
 3. Import the generated platform project into the XSCT workspace and build the Vitis platform:
  - Make sure the Vitis GUI is closed. A workspace can be used by either standalone `xsct` or the Vitis GUI, but not both at the same time.
  - Start a standalone `xsct` process and import the generated platform project into the workspace metadata:
    ```shell
-   cd /home/neutrino/workspace_4ch
+   cd /path/to/workspace_4ch
    xsct
    ```
    Then run:
    ```tcl
-   setws /home/neutrino/workspace_4ch
-   importprojects /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform
+   setws /path/to/workspace_4ch
+   importprojects /path/to/workspace_4ch/rfsoc_adc_vitis_platform
    exit
    ```
    If `importprojects` reports that `rfsoc_adc_vitis_platform` already exists in the workspace, continue. The platform is already registered.
  - Open the Vitis GUI with the same workspace used by `xsct`:
    ```shell
-   vitis -workspace /home/neutrino/workspace_4ch
+   vitis -workspace /path/to/workspace_4ch
    ```
  - If `rfsoc_adc_vitis_platform` does not appear in the **<em>Explorer</em>** window after the XSCT import, import it from the GUI:
    - Select **<em>File->Import...</em>**.
    - Select **<em>General->Existing Projects into Workspace</em>** and click **<em>Next</em>**.
-   - Set **<em>Select root directory</em>** to `/home/neutrino/workspace_4ch`.
+   - Set **<em>Select root directory</em>** to `/path/to/workspace_4ch`.
    - Enable **<em>Search for nested projects</em>** if that option is shown.
    - Select `rfsoc_adc_vitis_platform`.
-   - Leave **<em>Copy projects into workspace</em>** unchecked because the project is already under `/home/neutrino/workspace_4ch`.
+   - Leave **<em>Copy projects into workspace</em>** unchecked because the project is already under `/path/to/workspace_4ch`.
    - Click **<em>Finish</em>**.
  - Set the platform parameters:
    - Open `platform.spr` from the **<em>Explorer</em>** window (**<em>right-click->Open</em>**)
    - Set the paths to `fsbl.elf` and `pmufw.elf`: 
-     - `FSBL`: Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/zynqmp_fsbl.elf`
-     - `PMU Firmware`: Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/pmufw.elf`
+     - `FSBL`: Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc-linux/images/linux/zynqmp_fsbl.elf`
+     - `PMU Firmware`: Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc-linux/images/linux/pmufw.elf`
    - Select `xrt` in the opened tab in the main window
    - Under `Domain:xrt` field:
      - `Bif File:` Click downarrow in the `Browse` button to select `Generate Bif`.
-     - `Boot Components Directory:` Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/boot`.
-     - `FAT32 Partition Directory:` Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/fat32`.
+     - `Boot Components Directory:` Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc_adc_vitis_platform/boot`.
+     - `FAT32 Partition Directory:` Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc_adc_vitis_platform/fat32`.
      - `Display Name:` Change as wish.
      - `Description:` Change as wish.
      - **Leave `Linux Rootfs:` and `Sysroot Directory:` empty**.
  - Build the platform by click the :hammer: button on the tool bar.
-   After the build, the built Vitis platform is in `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform`.
+   After the build, the built Vitis platform is in `/path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform`.
  - Verify that the exported platform exposes RFDC tile 0 clock ID `3` as a fixed `76.8 MHz` clock before creating the application:
    ```shell
    platforminfo -v -p \
-     /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm | \
+     /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm | \
      sed -n '/Clock Information/,/Memory Information/p'
    ```
    The clock list must include clock ID `3` with status `fixed` and frequency `76800000`. Do not continue to the application build if clock ID `3` is missing or reported as a scaled clock.
@@ -261,8 +261,8 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - Select and open the `rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/rfsoc_adc_vitis_platform/boot/linux.bif` file from the **<em>Explorer</em>**.
    - Change the bootloader and PMU firmware lines to concrete file paths. Do not keep the angle brackets; Bootgen treats them as BIF syntax, not placeholders. The lines should be:
      ```
-     [bootloader] /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/boot/fsbl.elf
-     [pmufw_image] /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/boot/pmufw.elf
+     [bootloader] /path/to/workspace_4ch/rfsoc_adc_vitis_platform/boot/fsbl.elf
+     [pmufw_image] /path/to/workspace_4ch/rfsoc_adc_vitis_platform/boot/pmufw.elf
      ```
    - If this `linux.bif` file is regenerated later, repeat this edit before rebuilding the platform or packaging the system project.
 
@@ -273,12 +273,12 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      - Click the `Download` button to install the templates from the **<em>Vitis Accel Examples Repository</em>**
      - Only need to do this once
    - Go to **<em>File->New->Application Project...</em>** to create a new application project:
-     - Select the regenerated `rfsoc_adc_vitis_platform` created in Step 3. If the platform doesn't show up as a choice, press the **+** button and select `/home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm`. Press the `Next>` button.
+     - Select the regenerated `rfsoc_adc_vitis_platform` created in Step 3. If the platform doesn't show up as a choice, press the **+** button and select `/path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/rfsoc_adc_vitis_platform.xpfm`. Press the `Next>` button.
      - Name the project `test_adc`. Press the `Next>` button.
      - Under `Application settings` field:
-       - `Sysroot path:` Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/sysroots/cortexa72-cortexa53-xilinx-linux`.
-       - `Root FS:` Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/rootfs.ext4`.
-       - `Kernel Image:` Click the `Browse` button to select `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/Image`.
+       - `Sysroot path:` Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc-linux/images/linux/sysroots/cortexa72-cortexa53-xilinx-linux`.
+       - `Root FS:` Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc-linux/images/linux/rootfs.ext4`.
+       - `Kernel Image:` Click the `Browse` button to select `/path/to/workspace_4ch/rfsoc-linux/images/linux/Image`.
        - Press the `Next>` button.
    - Select **<em>Acceleration templates with PL and AIE accelerators->Host Examples->Data Transfer (C)</em>** to finish up the application project creation step.
   
@@ -333,23 +333,23 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - Open `test_adc_system.sprj` from the **<em>Explorer</em>**.
    - Select **<em>Hardware</em>** for **<em>Active build configuration</em>** at the upper-right corner.
    - Add `--package.no_image` to the `Packaging options` field to turn off generating a disk image. This still runs the package step and still requires valid boot files for BIF generation.
-   - If Bootgen reports a syntax error in `/home/neutrino/workspace_4ch/test_adc_system/Hardware/package/rfsoc_adc_vitis_platform.bif`, open that generated file and check the bootloader line. It must contain one bracketed attribute list followed by the actual FSBL file, not a directory and not a doubled bracket. For example:
+   - If Bootgen reports a syntax error in `/path/to/workspace_4ch/test_adc_system/Hardware/package/rfsoc_adc_vitis_platform.bif`, open that generated file and check the bootloader line. It must contain one bracketed attribute list followed by the actual FSBL file, not a directory and not a doubled bracket. For example:
      ```
-     [bootloader] /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/boot/fsbl.elf
-     [pmufw_image] /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/boot/pmufw.elf
+     [bootloader] /path/to/workspace_4ch/rfsoc_adc_vitis_platform/boot/fsbl.elf
+     [pmufw_image] /path/to/workspace_4ch/rfsoc_adc_vitis_platform/boot/pmufw.elf
      ```
-     A line like `[[bootloader] /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/` is malformed. Fix the source `linux.bif` in the exported platform as described in Step 3, then clean and rebuild packaging so Vitis regenerates the package BIF from the corrected template.
+     A line like `[[bootloader] /path/to/workspace_4ch/rfsoc_adc_vitis_platform/` is malformed. Fix the source `linux.bif` in the exported platform as described in Step 3, then clean and rebuild packaging so Vitis regenerates the package BIF from the corrected template.
    - If packaging reports that `export/rfsoc_adc_vitis_platform/sw/fsbl.elf` does not exist, copy the boot files from the PetaLinux image output into the platform export tree:
      ```shell
-     mkdir -p /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw
-     cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/zynqmp_fsbl.elf \
-        /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/fsbl.elf
-     cp /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/pmufw.elf \
-        /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/pmufw.elf
-     ls -l /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/fsbl.elf \
-           /home/neutrino/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/pmufw.elf
+     mkdir -p /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw
+     cp /path/to/workspace_4ch/rfsoc-linux/images/linux/zynqmp_fsbl.elf \
+        /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/fsbl.elf
+     cp /path/to/workspace_4ch/rfsoc-linux/images/linux/pmufw.elf \
+        /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/pmufw.elf
+     ls -l /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/fsbl.elf \
+           /path/to/workspace_4ch/rfsoc_adc_vitis_platform/export/rfsoc_adc_vitis_platform/sw/pmufw.elf
      ```
-     If Vitis later reports missing `bl31.elf`, `u-boot.elf`, or `system.dtb`, copy those files from `/home/neutrino/workspace_4ch/rfsoc-linux/images/linux/` to the path named in the error message.
+     If Vitis later reports missing `bl31.elf`, `u-boot.elf`, or `system.dtb`, copy those files from `/path/to/workspace_4ch/rfsoc-linux/images/linux/` to the path named in the error message.
    - Clean the system project if this workspace previously built the single-stream design.
    - Click the :hammer: button on the tool bar to build the project.
    - After rebuilding, verify that the generated HLS report targets `76.8 MHz`. For example, a roughly 2048-cycle `write_triggered_waveform` pipeline should report approximately `26.67 us`.
@@ -357,7 +357,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
    - After the build completes, verify that the generated `xclbin` contains the five-stream kernel:
      ```shell
      xclbinutil --info --input \
-       /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin | \
+       /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin | \
        grep -E "data_in|trigger_in|adc_b_in|adc_a_in|ext_trigger_in|PPS_TRIG_AXIS|dummy_kernel"
      ```
      The output should show the `dummy_kernel` signature with all five AXI4-Stream arguments, and the command line should include:
@@ -370,7 +370,7 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      ```
    - The files to deploy after a Vitis build are generated under:
      ```shell
-     /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/
+     /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/
      ```
      For a host or kernel change, keep the executable and xclbin as a matched pair and update both files on the SD-card boot partition:
      ```shell
@@ -405,12 +405,12 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      The two partition device nodes must start with `b`, for example `brw-rw----`. If a partition node is missing or is a regular file, unplug and replug the SD-card reader, then check again.
    - Create a target-friendly EXT4 root partition and copy the PetaLinux rootfs into it. This avoids EXT4 feature mismatches, such as `64bit` and `metadata_csum`, that can prevent the target kernel from mounting the rootfs:
      ```shell
-     cd /home/neutrino/workspace_4ch
+     cd /path/to/workspace_4ch
      mkdir -p /tmp/rootfs_src rootfs-sd
      sudo umount ${SD}1 ${SD}2 mnt /tmp/rootfs_src rootfs-sd 2>/dev/null || true
 
      sudo mkfs.ext4 -F -L rootfs -O ^64bit,^metadata_csum ${SD}2
-     sudo mount -o loop,ro /home/neutrino/workspace_4ch/rfsoc-linux/images/linux/rootfs.ext4 /tmp/rootfs_src
+     sudo mount -o loop,ro /path/to/workspace_4ch/rfsoc-linux/images/linux/rootfs.ext4 /tmp/rootfs_src
      sudo mount -t ext4 ${SD}2 rootfs-sd
      findmnt rootfs-sd
 
@@ -429,14 +429,14 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      ```
    - Copy boot files, bit file, and executable to the SD card:
      ```shell
-     sudo cp /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/* mnt/
+     sudo cp /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/* mnt/
      sync
      sudo umount mnt
      ```
      If reusing an SD card image that already boots and has XRT working, it is enough to replace the two updated application files on the FAT32 boot partition. Always copy `test_adc` and `dummy_kernel.xclbin` together from the same build:
      ```shell
-     sudo cp /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/test_adc mnt/
-     sudo cp /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin mnt/
+     sudo cp /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/test_adc mnt/
+     sudo cp /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/dummy_kernel.xclbin mnt/
      sync
      ```
      If the platform, device tree, kernel image, or boot files changed, copy the full `sd_card` directory instead of only the two application files.
@@ -451,17 +451,36 @@ ZCU104-Step 1](https://github.com/Xilinx/Vitis-Tutorials/blob/2023.1/Vitis_Platf
      ```text
      Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
      ```
-     first check that the SD card has a valid EXT4 rootfs on partition 2. To test or temporarily fix boot arguments without rebuilding the device tree, interrupt U-Boot during its countdown and run:
+     first check that the SD card has a valid EXT4 rootfs on partition 2.
+
+     To make the SD card boot without manually typing `bootargs` at the U-Boot prompt, create `uEnv.txt` on the FAT32 boot partition. If the boot partition is still mounted at `mnt` on the host:
+     ```shell
+     sudo tee mnt/uEnv.txt >/dev/null <<'EOF'
+     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
+     EOF
+     sync
+     sudo umount mnt
+     ```
+
+     If the board has already booted once using a temporary U-Boot command, create the same file from Linux on the board:
+     ```shell
+     cat > /run/media/boot-mmcblk0p1/uEnv.txt <<'EOF'
+     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
+     EOF
+     sync
+     cat /run/media/boot-mmcblk0p1/uEnv.txt
+     reboot
+     ```
+
+     The generated `boot.scr` imports `uEnv.txt` before loading the kernel, so the next boot should not require manual `setenv bootargs`.
+
+     To test the same setting temporarily without modifying the SD card, interrupt U-Boot during its countdown and run:
      ```shell
      setenv bootargs 'earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4'
      printenv bootargs
      run bootcmd
      ```
-     This U-Boot change is temporary unless `saveenv` is supported and intentionally used. A persistent no-rebuild option is to place `uEnv.txt` on the FAT32 boot partition with:
-     ```text
-     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
-     ```
-     The generated `boot.scr` imports `uEnv.txt` before loading the kernel. If the same panic remains after setting these boot arguments, recreate the EXT4 rootfs partition using the commands above.
+     This U-Boot change is temporary unless `saveenv` is supported and intentionally used. If the same panic remains after setting these boot arguments, recreate the EXT4 rootfs partition using the commands above.
      Boot up the RFSoC4x2 board.
    - Log in as `root` (default password is `root`, remember to change it after logging in).
      Do `ifconfig` to check the IP address. With the IP address, can also `ssh` in as `root`.
@@ -592,7 +611,7 @@ Complete this test after the PPS-enabled Vitis build. The purpose is to verify s
 
    ```shell
    sudo cp -a \
-     /home/neutrino/workspace_4ch/test_adc_system/Hardware/package/sd_card/. \
+     /path/to/workspace_4ch/test_adc_system/Hardware/package/sd_card/. \
      /path/to/mounted/boot/
    sync
    ```

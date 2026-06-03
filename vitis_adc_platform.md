@@ -293,6 +293,40 @@ If you previously built the single-stream version or a platform without RFDC clo
      sudo picocom -b 115200 /dev/ttyUSB1
      ```
      Boot up the RFSoC4x2 board.
+   - If boot stops with:
+     ```text
+     Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+     ```
+     first check that the SD card has a valid EXT4 rootfs on partition 2.
+
+     To make the SD card boot without manually typing `bootargs` at the U-Boot prompt, create `uEnv.txt` on the FAT32 boot partition. If the boot partition is still mounted at `mnt` on the host:
+     ```shell
+     sudo tee mnt/uEnv.txt >/dev/null <<'EOF'
+     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
+     EOF
+     sync
+     sudo umount mnt
+     ```
+
+     If the board has already booted once using a temporary U-Boot command, create the same file from Linux on the board:
+     ```shell
+     cat > /run/media/boot-mmcblk0p1/uEnv.txt <<'EOF'
+     bootargs=earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4
+     EOF
+     sync
+     cat /run/media/boot-mmcblk0p1/uEnv.txt
+     reboot
+     ```
+
+     The generated `boot.scr` imports `uEnv.txt` before loading the kernel, so the next boot should not require manual `setenv bootargs`.
+
+     To test the same setting temporarily without modifying the SD card, interrupt U-Boot during its countdown and run:
+     ```shell
+     setenv bootargs 'earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4'
+     printenv bootargs
+     run bootcmd
+     ```
+     This U-Boot change is temporary unless `saveenv` is supported and intentionally used. If the same panic remains after setting these boot arguments, recreate the EXT4 rootfs partition using the commands above.
    - Log in as `root` (default password is `root`, remember to change it after logging in).
      Do `ifconfig` to check the IP address. With the IP address, can also `ssh` in as `root`.
      Petalinux also creates a sudoer with login `petalinux`, whose passwd is set by the user when logging in the first time.
