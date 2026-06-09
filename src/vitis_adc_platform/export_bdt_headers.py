@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Export small HLS headers from the CsI BDT NumPy artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import math
+import struct
+from pathlib import Path
+from typing import Iterable, List, Sequence
+
+
+def _read_npy_header(path: Path):
+    with path.open("rb") as handle:
+        magic = handle.read(6)
+        if magic != b"\x93NUMPY":
+            raise ValueError(f"{path} is not a .npy file")
+
+        major, minor = handle.read(2)
+        if (major, minor) == (1, 0):
+            header_len = struct.unpack("<H", handle.read(2))[0]
+        elif major in (2, 3):
+            header_len = struct.unpack("<I", handle.read(4))[0]
+        else:
+            raise ValueError(f"Unsupported .npy version {major}.{minor} in {path}")
+
+        encoding = "utf-8" if major == 3 else "latin1"
+        header = ast.literal_eval(handle.read(header_len).decode(encoding))
+        data = handle.read()
+
+    return header, data
+
+
+def _unpack_npy_without_numpy(path: Path) -> List[float]:
+    header, data = _read_npy_header(path)
+    if header.get("fortran_order"):
+        raise ValueError(f"Fortran-order arrays are not supported: {path}")
+
+    descr = header["descr"]
+    shape = header["shape"]
+    count = math.prod(shape)
+    if descr[0] not in ("<", ">", "|"):
+        raise ValueError(f"Unsupported dtype byte order {descr!r} in {path}")
+
+    kind = descr[1]
+    itemsize = int(descr[2:])
+    endian = "<" if descr[0] in ("<", "|") else ">"
+
+    if kind == "i":
+        codes = {1: "b", 2: "h", 4: "i", 8: "q"}
+    elif kind == "u":
+        codes = {1: "B", 2: "H", 4: "I", 8: "Q"}
+    elif kind == "f":
+        codes = {4: "f", 8: "d"}
+    else:
+        raise ValueError(f"Unsupported dtype kind {descr!r} in {path}")
+
+    if itemsize not in codes:
+        raise ValueError(f"Unsupported dtype size {descr!r} in {path}")
+
+    expected = count * itemsize
+    if len(data) < expected:
+        raise ValueError(f"Truncated .npy payload in {path}")
+
+    fmt = f"{endian}{count}{codes[itemsize]}"
+    return list(struct.unpack(fmt, data[:expected]))
+
+
+def load_npy(path: Path) -> List[float]:
+    try:
+        import numpy as np  # type: ignore
+    except ImportError:
+        return _unpack_npy_without_numpy(path)
+
+    return np.load(str(path)).reshape(-1).tolist()
+
+
+def format_values(values: Sequence[int], per_line: int = 12) -> str:
+    lines = []
+    for start in range(0, len(values), per_line):
+        chunk = values[start:start + per_line]
+        lines.append("    " + ", ".join(str(value) for value in chunk))
+    return ",\n".join(lines)
+
+
+def write_feature_indices(path: Path, indices: Sequence[int]) -> None:
+    if not indices:
+        raise ValueError("Feature-index array is empty")
+    if any(index < 0 for index in indices):
+        raise ValueError("Feature indices must be non-negative")
+
+    body = format_values(indices)
+    path.write_text(
+        "#ifndef BDT_FEATURE_INDICES_H\n"
+        "#define BDT_FEATURE_INDICES_H\n\n"
+        f"#define BDT_MODEL_INPUTS {len(indices)}\n"
+        "#define BDT_SCORE_BITS 18\n"
+        "#define BDT_SCORE_INTEGER_BITS 8\n\n"
+        "static const unsigned int BDT_FEATURE_INDEX[BDT_MODEL_INPUTS] = {\n"
+        f"{body}\n"
+        "};\n\n"
+        "#endif\n",
+        encoding="ascii",
+    )
+
+
+def write_norm_config(path: Path, stats: Sequence[float]) -> None:
+    if len(stats) < 2:
+        raise ValueError("norm_stats.npy must contain at least [mean, sigma]")
+
+    mean = float(stats[0])
+    sigma = float(stats[1])
+    inv_sigma = 1.0 / (sigma + 1.0e-8)
+    if not math.isfinite(mean) or not math.isfinite(inv_sigma):
+        raise ValueError("Normalization constants must be finite")
+
+    path.write_text(
+        "#ifndef BDT_NORM_CONFIG_H\n"
+        "#define BDT_NORM_CONFIG_H\n\n"
+        f"#define BDT_NORM_MEAN {mean:.9g}f\n"
+        f"#define BDT_NORM_INV_SIGMA {inv_sigma:.9g}f\n\n"
+        "#endif\n",
+        encoding="ascii",
+    )
+
+
+def as_int_indices(values: Iterable[float]) -> List[int]:
+    indices = []
+    for value in values:
+        index = int(value)
+        if float(value) != float(index):
+            raise ValueError(f"Non-integer feature index: {value}")
+        indices.append(index)
+    return indices
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Export bdt_feature_indices.h and optional bdt_norm_config.h"
+    )
+    parser.add_argument(
+        "--top-feat-idx",
+        type=Path,
+        required=True,
+        help="Path to top_feat_idx.npy from csi_bdt_prj_kv260/pynq_data",
+    )
+    parser.add_argument(
+        "--norm-stats",
+        type=Path,
+        help="Optional path to norm_stats.npy with [mean, sigma]",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("src/vitis_adc_platform"),
+        help="Directory for generated HLS headers",
+    )
+    args = parser.parse_args()
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    feature_indices = as_int_indices(load_npy(args.top_feat_idx))
+    feature_header = args.output_dir / "bdt_feature_indices.h"
+    write_feature_indices(feature_header, feature_indices)
+    print(f"Wrote {feature_header} ({len(feature_indices)} indices)")
+
+    if args.norm_stats is not None:
+        norm_header = args.output_dir / "bdt_norm_config.h"
+        write_norm_config(norm_header, load_npy(args.norm_stats))
+        print(f"Wrote {norm_header}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

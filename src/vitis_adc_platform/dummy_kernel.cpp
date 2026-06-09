@@ -31,11 +31,19 @@
 #define PRETRIGGER_WORDS (CAPTURE_WORDS / 5)
 #define POSTTRIGGER_WORDS (CAPTURE_WORDS - PRETRIGGER_WORDS - 1)
 #define SUM_MAX_THRESHOLD 200
+#define BDT_SOURCE_BINS 1250
+#define DUMMY_BDT_FEATURES 250
+#define BDT_SCORE_FRAC_BITS 10
+#define BDT_SCORE_SCALE_RAW (1 << BDT_SCORE_FRAC_BITS)
+#define OUTPUT_METADATA_WORDS 1
+#define OUTPUT_WORDS (CAPTURE_WORDS + OUTPUT_METADATA_WORDS)
 
 typedef ap_axis<STREAM_WIDTH, 0, 0, 0> pkt;
 typedef ap_uint<32> trigger_pkt;
 typedef ap_int<16> sample_t;
 typedef ap_int<20> sum_sample_t;
+typedef ap_int<24> sum_accum_t;
+typedef ap_int<32> bdt_score_raw_t;
 
 static ap_uint<PACKED_WIDTH> pack_stream_words(pkt data_value,
                                                pkt trigger_value,
@@ -85,10 +93,12 @@ static void summarize_sum_word(ap_uint<STREAM_WIDTH> data_word,
                                ap_uint<STREAM_WIDTH> trigger_word,
                                ap_uint<STREAM_WIDTH> adc_b_word,
                                ap_uint<STREAM_WIDTH> adc_a_word,
-                               bool& word_over_threshold)
+                               bool& word_over_threshold,
+                               sum_sample_t& word_average)
 {
 #pragma HLS INLINE
     bool over_threshold = false;
+    sum_accum_t accumulator = 0;
 
 sum_word_lanes:
     for (unsigned int lane = 0; lane < SAMPLES_PER_WORD; ++lane) {
@@ -103,12 +113,14 @@ sum_word_lanes:
             (sum_sample_t)sign_extend_sample(trigger_raw) +
             (sum_sample_t)sign_extend_sample(adc_b_raw) +
             (sum_sample_t)sign_extend_sample(adc_a_raw);
+        accumulator += (sum_accum_t)sum_sample;
         if (sum_sample >= SUM_MAX_THRESHOLD) {
             over_threshold = true;
         }
     }
 
     word_over_threshold = over_threshold;
+    word_average = (sum_sample_t)(accumulator >> 3);
 }
 
 static void advance_index(unsigned int& index, unsigned int limit)
@@ -119,6 +131,59 @@ static void advance_index(unsigned int& index, unsigned int limit)
         index = 0;
     }
 }
+
+static unsigned int circular_offset(unsigned int start_index,
+                                    unsigned int offset,
+                                    unsigned int limit)
+{
+#pragma HLS INLINE
+    unsigned int index = start_index + offset;
+    if (index >= limit) {
+        index -= limit;
+    }
+    return index;
+}
+
+static ap_uint<PACKED_WIDTH> pack_metadata(bdt_score_raw_t bdt_score_raw,
+                                           bool bdt_score_valid,
+                                           bool bdt_score_real)
+{
+#pragma HLS INLINE
+    ap_uint<PACKED_WIDTH> metadata = 0;
+    metadata.range(31, 0) = (ap_uint<32>)bdt_score_raw;
+    metadata[32] = bdt_score_valid ? 1 : 0;
+    metadata[33] = bdt_score_real ? 1 : 0;
+    return metadata;
+}
+
+#ifdef USE_CONIFER_BDT
+#include "bdt_sum_trigger_conifer.h"
+#else
+static bdt_score_raw_t bdt_sum_score(
+    const sum_sample_t downsample_history[BDT_SOURCE_BINS],
+    unsigned int start_index,
+    bool& score_valid,
+    bool& score_real)
+{
+#pragma HLS INLINE off
+    ap_int<32> accumulator = 0;
+
+dummy_bdt_features:
+    for (unsigned int i = 0; i < DUMMY_BDT_FEATURES; ++i) {
+#pragma HLS PIPELINE II = 1
+        unsigned int offset = i * (BDT_SOURCE_BINS / DUMMY_BDT_FEATURES);
+        unsigned int index = circular_offset(start_index,
+                                             offset,
+                                             BDT_SOURCE_BINS);
+        accumulator += (ap_int<32>)downsample_history[index];
+    }
+
+    score_valid = true;
+    score_real = false;
+    ap_int<32> average = accumulator / DUMMY_BDT_FEATURES;
+    return average * BDT_SCORE_SCALE_RAW;
+}
+#endif
 
 extern "C" {
 void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
@@ -136,7 +201,7 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
 #pragma HLS INTERFACE axis port = adc_a_in
 #pragma HLS INTERFACE axis port = ext_trigger_in
 
-    if (size != CAPTURE_WORDS || output_words < CAPTURE_WORDS) {
+    if (size != CAPTURE_WORDS || output_words < OUTPUT_WORDS) {
         return;
     }
 
@@ -146,16 +211,30 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
     ap_uint<1> over_threshold_ring[CAPTURE_WORDS];
 #pragma HLS BIND_STORAGE variable=over_threshold_ring type=ram_2p impl=bram
 
+    sum_sample_t downsample_history[BDT_SOURCE_BINS];
+#pragma HLS BIND_STORAGE variable=downsample_history type=ram_2p impl=bram
+
 init_trigger_state:
     for (unsigned int i = 0; i < CAPTURE_WORDS; ++i) {
 #pragma HLS PIPELINE II = 1
         over_threshold_ring[i] = 0;
     }
 
+init_downsample_state:
+    for (unsigned int i = 0; i < BDT_SOURCE_BINS; ++i) {
+#pragma HLS PIPELINE II = 1
+        downsample_history[i] = 0;
+    }
+
     unsigned int write_idx = 0;
     unsigned int pretrigger_count = 0;
     unsigned int posttrigger_count = 0;
     unsigned int over_threshold_count = 0;
+    unsigned int downsample_write_idx = 0;
+    unsigned int downsample_accumulator = 0;
+    bdt_score_raw_t accepted_bdt_score_raw = 0;
+    bool accepted_bdt_score_valid = false;
+    bool accepted_bdt_score_real = false;
     bool pretrigger_ready = false;
     bool previous_ext_trigger_level = false;
     bool ext_trigger_armed = false;
@@ -187,11 +266,13 @@ capture_external_trigger:
             trigger_pkt ext_trigger_word = ext_trigger_in.read();
 
             bool word_over_threshold = false;
+            sum_sample_t word_average = 0;
             summarize_sum_word(data_word,
                                trigger_word,
                                adc_b_word,
                                adc_a_word,
-                               word_over_threshold);
+                               word_over_threshold,
+                               word_average);
 
             bool overwritten_over_threshold = (over_threshold_ring[write_idx] != 0);
             if (overwritten_over_threshold && over_threshold_count != 0) {
@@ -200,6 +281,13 @@ capture_external_trigger:
             over_threshold_ring[write_idx] = word_over_threshold ? 1 : 0;
             if (word_over_threshold) {
                 over_threshold_count++;
+            }
+
+            downsample_accumulator += BDT_SOURCE_BINS;
+            if (downsample_accumulator >= CAPTURE_WORDS) {
+                downsample_accumulator -= CAPTURE_WORDS;
+                downsample_history[downsample_write_idx] = word_average;
+                advance_index(downsample_write_idx, BDT_SOURCE_BINS);
             }
 
             capture_buffer[write_idx] = packed;
@@ -235,6 +323,16 @@ capture_external_trigger:
 
         bool sum_max_accept = (over_threshold_count == 0);
         if (sum_max_accept) {
+            bool candidate_bdt_score_valid = false;
+            bool candidate_bdt_score_real = false;
+            bdt_score_raw_t candidate_bdt_score_raw =
+                bdt_sum_score(downsample_history,
+                              downsample_write_idx,
+                              candidate_bdt_score_valid,
+                              candidate_bdt_score_real);
+            accepted_bdt_score_raw = candidate_bdt_score_raw;
+            accepted_bdt_score_valid = candidate_bdt_score_valid;
+            accepted_bdt_score_real = candidate_bdt_score_real;
             event_accepted = true;
         } else {
             triggered = false;
@@ -250,5 +348,10 @@ write_triggered_waveform:
         buffer0[out_idx] = capture_buffer[read_idx];
         advance_index(read_idx, CAPTURE_WORDS);
     }
+
+    buffer0[CAPTURE_WORDS] =
+        pack_metadata(accepted_bdt_score_raw,
+                      accepted_bdt_score_valid,
+                      accepted_bdt_score_real);
 }
 }

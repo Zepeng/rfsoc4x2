@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -50,10 +51,14 @@ typedef ap_uint<PACKED_WIDTH> data_t;
 static const size_t SAMPLES_PER_WORD = STREAM_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
 static const size_t PACKED_WORDS_PER_FRAME = DATA_SIZE;
+static const size_t METADATA_WORDS_PER_FRAME = 1;
+static const size_t PACKED_WORDS_PER_TRANSFER =
+    PACKED_WORDS_PER_FRAME + METADATA_WORDS_PER_FRAME;
+static const double BDT_SCORE_SCALE = 1024.0;
 static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
 static const double DEFAULT_FRAME_RATE_HZ = 1000.0;
 static const char* HOST_BUILD_TAG =
-    "test_adc host build: PPS plus four-channel sum-threshold trigger";
+    "test_adc host build: PPS plus sum-threshold trigger and BDT score";
 
 enum class StreamMode {
     NONE,
@@ -84,7 +89,7 @@ static void usage(const char* argv0)
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
         << "Four-channel build: external 1PPS rising edge arms candidate captures in FPGA.\n"
         << "The kernel returns only events whose channel-sum waveform passes the\n"
-        << "sum-maximum threshold.\n"
+        << "sum-maximum threshold and prints a BDT score for design verification.\n"
         << "wave.txt rows are: <ADC_D> <ADC_C> <ADC_B> <ADC_A>.\n"
         << "Each waveform contains about 20% pretrigger and 80% post-trigger samples.\n\n"
         << "Options:\n"
@@ -383,7 +388,7 @@ static void pack_interleaved_channel_samples(
     const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data,
     std::vector<int16_t>& samples)
 {
-    if (source_hw_data.size() != PACKED_WORDS_PER_FRAME) {
+    if (source_hw_data.size() < PACKED_WORDS_PER_FRAME) {
         throw std::runtime_error("Unexpected four-channel hardware buffer size");
     }
 
@@ -409,6 +414,35 @@ static void pack_interleaved_channel_samples(
             adc_a_word >>= 16;
         }
     }
+}
+
+struct FrameMetadata {
+    int32_t bdt_score_raw = 0;
+    uint64_t metadata_low64 = 0;
+    bool bdt_score_valid = false;
+    bool bdt_score_real = false;
+
+    double bdt_score() const
+    {
+        return static_cast<double>(bdt_score_raw) / BDT_SCORE_SCALE;
+    }
+};
+
+static FrameMetadata extract_frame_metadata(
+    const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data)
+{
+    if (source_hw_data.size() < PACKED_WORDS_PER_TRANSFER) {
+        throw std::runtime_error("Hardware buffer does not contain BDT metadata");
+    }
+
+    FrameMetadata metadata;
+    data_t metadata_word = source_hw_data[PACKED_WORDS_PER_FRAME];
+    uint32_t score_bits = static_cast<uint32_t>(metadata_word.range(31, 0));
+    metadata.bdt_score_raw = static_cast<int32_t>(score_bits);
+    metadata.metadata_low64 = static_cast<uint64_t>(metadata_word.range(63, 0));
+    metadata.bdt_score_valid = (metadata_word.range(32, 32) != 0);
+    metadata.bdt_score_real = (metadata_word.range(33, 33) != 0);
+    return metadata;
 }
 
 static void write_wave_file(const std::string& path, const std::vector<int16_t>& samples)
@@ -443,13 +477,13 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    size_t vector_size_bytes = sizeof(data_t) * PACKED_WORDS_PER_FRAME;
+    size_t vector_size_bytes = sizeof(data_t) * PACKED_WORDS_PER_TRANSFER;
     cl_int err;
     cl::Context context;
     cl::Kernel krnl;
     cl::CommandQueue q;
 
-    std::vector<data_t, aligned_allocator<data_t> > source_hw_data(PACKED_WORDS_PER_FRAME);
+    std::vector<data_t, aligned_allocator<data_t> > source_hw_data(PACKED_WORDS_PER_TRANSFER);
     for (size_t i = 0; i < source_hw_data.size(); i++) {
         source_hw_data[i] = 99;
     }
@@ -482,7 +516,7 @@ int main(int argc, char** argv)
                                     source_hw_data.data(), &err));
 
     unsigned int size = DATA_SIZE;
-    unsigned int output_words = PACKED_WORDS_PER_FRAME;
+    unsigned int output_words = PACKED_WORDS_PER_TRANSFER;
     OCL_CHECK(err, err = krnl.setArg(0, buffer));
     OCL_CHECK(err, err = krnl.setArg(6, size));
     OCL_CHECK(err, err = krnl.setArg(7, output_words));
@@ -499,6 +533,7 @@ int main(int argc, char** argv)
     size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
     std::cout << "External PPS trigger on PPS_TRIG_AXIS rising edge\n"
               << "Accepted events also require max(ADC_D + ADC_C + ADC_B + ADC_A) < 200\n"
+              << "BDT score is printed for accepted threshold events but does not select events\n"
               << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
               << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
               << "Trigger word is near sample " << pretrigger_samples
@@ -518,6 +553,21 @@ int main(int argc, char** argv)
             OCL_CHECK(err, err = q.enqueueTask(krnl));
             OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer}, CL_MIGRATE_MEM_OBJECT_HOST));
             q.finish();
+
+            FrameMetadata metadata = extract_frame_metadata(source_hw_data);
+            if (metadata.bdt_score_valid) {
+                const char* score_label =
+                    metadata.bdt_score_real ? "BDT" : "dummy BDT";
+                std::cout << "Frame " << frame_id
+                          << " " << score_label << " score: "
+                          << std::setprecision(8) << metadata.bdt_score()
+                          << " (raw " << metadata.bdt_score_raw << ")\n";
+            } else {
+                std::cout << "Frame " << frame_id
+                          << " BDT score: unavailable"
+                          << " (metadata low64 0x" << std::hex
+                          << metadata.metadata_low64 << std::dec << ")\n";
+            }
 
             pack_interleaved_channel_samples(source_hw_data, samples);
 
