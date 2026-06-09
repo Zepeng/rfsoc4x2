@@ -53,7 +53,7 @@ static const size_t PACKED_WORDS_PER_FRAME = DATA_SIZE;
 static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
 static const double DEFAULT_FRAME_RATE_HZ = 1000.0;
 static const char* HOST_BUILD_TAG =
-    "test_adc host build: external-PPS-triggered four-channel ADC stream";
+    "test_adc host build: PPS plus four-channel sum-threshold trigger";
 
 enum class StreamMode {
     NONE,
@@ -82,7 +82,9 @@ static void usage(const char* argv0)
         << "  " << argv0 << " <XCLBIN File>\n"
         << "  " << argv0 << " <XCLBIN File> --tcp <host> <port> [options]\n"
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
-        << "Four-channel build: external 1PPS rising edge triggers capture in FPGA.\n"
+        << "Four-channel build: external 1PPS rising edge arms candidate captures in FPGA.\n"
+        << "The kernel returns only events whose channel-sum waveform passes the\n"
+        << "sum-maximum threshold.\n"
         << "wave.txt rows are: <ADC_D> <ADC_C> <ADC_B> <ADC_A>.\n"
         << "Each waveform contains about 20% pretrigger and 80% post-trigger samples.\n\n"
         << "Options:\n"
@@ -496,6 +498,7 @@ int main(int argc, char** argv)
     size_t pretrigger_words = PACKED_WORDS_PER_FRAME / 5;
     size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
     std::cout << "External PPS trigger on PPS_TRIG_AXIS rising edge\n"
+              << "Accepted events also require max(ADC_D + ADC_C + ADC_B + ADC_A) < 200\n"
               << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
               << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
               << "Trigger word is near sample " << pretrigger_samples
