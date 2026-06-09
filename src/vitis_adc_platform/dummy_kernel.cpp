@@ -159,31 +159,36 @@ static ap_uint<PACKED_WIDTH> pack_metadata(bdt_score_raw_t bdt_score_raw,
 #ifdef USE_CONIFER_BDT
 #include "bdt_sum_trigger_conifer.h"
 #else
-static bdt_score_raw_t bdt_sum_score(
-    const sum_sample_t downsample_history[BDT_SOURCE_BINS],
-    unsigned int start_index,
-    bool& score_valid,
-    bool& score_real)
+static const unsigned int BDT_FEATURE_COUNT = DUMMY_BDT_FEATURES;
+
+static unsigned int bdt_feature_offset(unsigned int i)
+{
+#pragma HLS INLINE
+    return i * (BDT_SOURCE_BINS / DUMMY_BDT_FEATURES);
+}
+
+static void bdt_gather_feature(ap_int<32>& accumulator,
+                               unsigned int i,
+                               sum_sample_t sample)
+{
+#pragma HLS INLINE
+    accumulator += (ap_int<32>)sample;
+}
+
+static bdt_score_raw_t bdt_finalize_score(ap_int<32> accumulator,
+                                          bool& score_valid,
+                                          bool& score_real)
 {
 #pragma HLS INLINE off
-    ap_int<32> accumulator = 0;
-
-dummy_bdt_features:
-    for (unsigned int i = 0; i < DUMMY_BDT_FEATURES; ++i) {
-#pragma HLS PIPELINE II = 1
-        unsigned int offset = i * (BDT_SOURCE_BINS / DUMMY_BDT_FEATURES);
-        unsigned int index = circular_offset(start_index,
-                                             offset,
-                                             BDT_SOURCE_BINS);
-        accumulator += (ap_int<32>)downsample_history[index];
-    }
-
     score_valid = true;
     score_real = false;
     ap_int<32> average = accumulator / DUMMY_BDT_FEATURES;
     return average * BDT_SCORE_SCALE_RAW;
 }
 #endif
+
+static_assert(BDT_FEATURE_COUNT <= CAPTURE_WORDS,
+              "BDT feature gather must fit inside the waveform writeout loop");
 
 extern "C" {
 void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
@@ -232,9 +237,6 @@ init_downsample_state:
     unsigned int over_threshold_count = 0;
     unsigned int downsample_write_idx = 0;
     unsigned int downsample_accumulator = 0;
-    bdt_score_raw_t accepted_bdt_score_raw = 0;
-    bool accepted_bdt_score_valid = false;
-    bool accepted_bdt_score_real = false;
     bool pretrigger_ready = false;
     bool previous_ext_trigger_level = false;
     bool ext_trigger_armed = false;
@@ -323,16 +325,6 @@ capture_external_trigger:
 
         bool sum_max_accept = (over_threshold_count == 0);
         if (sum_max_accept) {
-            bool candidate_bdt_score_valid = false;
-            bool candidate_bdt_score_real = false;
-            bdt_score_raw_t candidate_bdt_score_raw =
-                bdt_sum_score(downsample_history,
-                              downsample_write_idx,
-                              candidate_bdt_score_valid,
-                              candidate_bdt_score_real);
-            accepted_bdt_score_raw = candidate_bdt_score_raw;
-            accepted_bdt_score_valid = candidate_bdt_score_valid;
-            accepted_bdt_score_real = candidate_bdt_score_real;
             event_accepted = true;
         } else {
             triggered = false;
@@ -342,16 +334,32 @@ capture_external_trigger:
 
     unsigned int read_idx = write_idx;
 
+#ifdef USE_CONIFER_BDT
+    input_arr_t bdt_features;
+#pragma HLS ARRAY_PARTITION variable=bdt_features complete
+#else
+    ap_int<32> bdt_features = 0;
+#endif
+
 write_triggered_waveform:
     for (unsigned int out_idx = 0; out_idx < CAPTURE_WORDS; ++out_idx) {
 #pragma HLS PIPELINE II = 1
         buffer0[out_idx] = capture_buffer[read_idx];
         advance_index(read_idx, CAPTURE_WORDS);
+        if (out_idx < BDT_FEATURE_COUNT) {
+            unsigned int index = circular_offset(downsample_write_idx,
+                                                 bdt_feature_offset(out_idx),
+                                                 BDT_SOURCE_BINS);
+            bdt_gather_feature(bdt_features, out_idx, downsample_history[index]);
+        }
     }
 
+    bool bdt_score_valid = false;
+    bool bdt_score_real = false;
+    bdt_score_raw_t bdt_score_raw =
+        bdt_finalize_score(bdt_features, bdt_score_valid, bdt_score_real);
+
     buffer0[CAPTURE_WORDS] =
-        pack_metadata(accepted_bdt_score_raw,
-                      accepted_bdt_score_valid,
-                      accepted_bdt_score_real);
+        pack_metadata(bdt_score_raw, bdt_score_valid, bdt_score_real);
 }
 }

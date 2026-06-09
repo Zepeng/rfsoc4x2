@@ -47,26 +47,27 @@ static bdt_score_raw_t bdt_score_to_raw(score_t score)
     return (bdt_score_raw_t)score_bits;
 }
 
-static bdt_score_raw_t bdt_sum_score(
-    const sum_sample_t downsample_history[BDT_SOURCE_BINS],
-    unsigned int start_index,
-    bool& score_valid,
-    bool& score_real)
+static const unsigned int BDT_FEATURE_COUNT = n_features;
+
+static unsigned int bdt_feature_offset(unsigned int i)
+{
+#pragma HLS INLINE
+    return BDT_FEATURE_INDEX[i];
+}
+
+static void bdt_gather_feature(input_arr_t features,
+                               unsigned int i,
+                               sum_sample_t sample)
+{
+#pragma HLS INLINE
+    features[i] = bdt_preprocess_sample(sample);
+}
+
+static bdt_score_raw_t bdt_finalize_score(input_arr_t features,
+                                          bool& score_valid,
+                                          bool& score_real)
 {
 #pragma HLS INLINE off
-    input_arr_t features;
-#pragma HLS ARRAY_PARTITION variable=features complete
-
-bdt_prepare_features:
-    for (unsigned int i = 0; i < n_features; ++i) {
-#pragma HLS PIPELINE II = 1
-        unsigned int offset = BDT_FEATURE_INDEX[i];
-        unsigned int index = circular_offset(start_index,
-                                             offset,
-                                             BDT_SOURCE_BINS);
-        features[i] = bdt_preprocess_sample(downsample_history[index]);
-    }
-
     score_t score[BDT::fn_classes(n_classes)];
 #pragma HLS ARRAY_PARTITION variable=score complete
     bdt.decision_function(features, score);

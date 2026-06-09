@@ -64,9 +64,13 @@ When the PPS candidate completes, the FPGA accepts only candidates with:
 bool sum_max_accept = (over_threshold_count == 0);
 ```
 
-For accepted candidates, the kernel computes a BDT score, copies the waveform to
-DDR, and writes one metadata word. Rejected candidates are discarded internally
-and the kernel waits for the next PPS candidate.
+For accepted candidates, the kernel copies the waveform to DDR and gathers the
+BDT features inside the same pipelined writeout loop (the gather rides along in
+the first 250 iterations, reading `downsample_history` while the waveform words
+come from `capture_buffer`). After the loop, the BDT score is computed in a few
+cycles and written as one metadata word. The BDT therefore adds essentially no
+latency on top of the waveform readout. Rejected candidates are discarded
+internally and the kernel waits for the next PPS candidate.
 
 ## BDT Modes
 
