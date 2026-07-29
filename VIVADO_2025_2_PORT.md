@@ -459,12 +459,13 @@ directly without installing it. After the first board boot:
 ```bash
 BOOT_DIR=$(findmnt -rn -S /dev/mmcblk0p1 -o TARGET)
 test -n "$BOOT_DIR"
-cd /home/root
+cd /home/petalinux
 tar -xzf "$BOOT_DIR/xrfclk-2.0.tar.gz"
 cp "$BOOT_DIR/set_ref_clocks.py" .
-modprobe spidev
-PYTHONPATH=/home/root/xrfclk-2.0 python3 ./set_ref_clocks.py
-ls /dev/spidev*
+test -d /sys/bus/spi/drivers/spidev || sudo modprobe spidev
+sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
+  python3 /home/petalinux/set_ref_clocks.py
+sudo ls /dev/spidev*
 ```
 
 Only enable `USE_CONIFER_BDT` after the dummy build works. The real BDT depends
