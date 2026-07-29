@@ -1,8 +1,9 @@
 # Vivado 2025.2 migration driver for the RFSoC4x2 ADC platform.
 #
 # This script deliberately keeps rfsoc_adc_hardware_2023_2_1.tcl unchanged as
-# the known-good design description. It adapts only the generated run-flow
-# names and board-repository path before sourcing that design in Vivado 2025.2.
+# the known-good design description. It adapts generated run-flow names, the
+# board-repository path, incompatible metadata, and the legacy PPS ILA AXIS
+# ready probe before sourcing that design in Vivado 2025.2.
 #
 # Example:
 #   vivado -mode batch \
@@ -226,6 +227,43 @@ foreach generated_line $incompatible_generated_lines {
   set replacement \
     "# Vivado 2025.2 migration: omitted generated session/file metadata"
   set migrated_text [string map [list $generated_line $replacement] $migrated_text]
+}
+
+# The legacy ILA probes pps_trigger_axis_0/m_axis_tready directly. In the
+# extensible-platform flow, Vitis owns and reconstructs the exported AXIS
+# connection during linking. The native TREADY tap is consequently detached
+# from the bundled interface and leaves an unconnected ILA channel, which
+# Vivado 2025.2 rejects with VPL 16-213 during implementation. Keep the three
+# adapter status probes and reset, but remove the AXIS-ready probe.
+set legacy_probe4_width "    CONFIG.C_PROBE4_WIDTH {1} \\"
+set legacy_ready_probe {
+  connect_bd_net -net pps_trigger_axis_ready [get_bd_pins pps_trigger_axis_0/m_axis_tready] [get_bd_pins ila_pps_trigger/probe3]}
+
+foreach adaptation [list \
+  [list \
+    {PPS ILA probe count} \
+    {CONFIG.C_NUM_OF_PROBES {5}} \
+    {CONFIG.C_NUM_OF_PROBES {4}}] \
+  [list \
+    {PPS ILA probe4 width} \
+    $legacy_probe4_width \
+    ""] \
+  [list \
+    {PPS AXIS-ready ILA connection} \
+    $legacy_ready_probe \
+    ""] \
+  [list \
+    {PPS ILA reset probe index} \
+    {[get_bd_pins ila_pps_trigger/probe4]} \
+    {[get_bd_pins ila_pps_trigger/probe3]}] \
+] {
+  lassign $adaptation description legacy_fragment migrated_fragment
+  if {[string first $legacy_fragment $migrated_text] < 0} {
+    ::rfsoc_adc_2025_2::fail \
+      "the 2023.2.1 source changed: $description adaptation point was not found"
+  }
+  set migrated_text \
+    [string map [list $legacy_fragment $migrated_fragment] $migrated_text]
 }
 
 foreach stale_flow {

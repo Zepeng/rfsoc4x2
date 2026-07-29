@@ -48,6 +48,12 @@ validation remain pending.
 - Vitis 2025.2 `Domain` objects no longer provide the 2023.2
   `add_boot_dir()` and `add_bif()` methods. The working flow calls
   `generate_bif()` and `set_boot_dir(path=<PetaLinux images/linux>)`.
+- The legacy PPS ILA probes the exported `m_axis_tready` signal directly.
+  Vitis reconstructs that AXIS connection while extending the platform and
+  leaves the native ILA tap unconnected, causing `VPL 16-213` at
+  implementation. The 2025.2 migration removes only the ready probe and uses
+  four fully connected probes: synchronized PPS, AXIS level, AXIS valid, and
+  reset.
 
 ## Required Build Host
 
@@ -358,6 +364,14 @@ platform streams. It intentionally omits an `sp` mapping for `buffer0`; Vitis
 automatically selects an available platform memory resource when no explicit
 mapping is supplied. Record that generated mapping from the link report before
 deciding whether to pin it.
+
+If implementation reports `VPL 16-213` for
+`system_i/ila_pps_trigger/probe3`, the XPFM was generated from the legacy
+five-probe ILA. Pull the four-probe migration fix, regenerate the extensible
+XSA in a fresh Vivado output directory, and rebuild the Vitis platform in a
+fresh workspace. The PetaLinux image does not need to be rebuilt because this
+change only removes an internal debug tap; reuse the verified
+`images/linux` directory. The existing dummy-kernel `.xo` is also reusable.
 
 Archive the Vitis and Vivado link reports. The first link is accepted only if
 it finishes without errors, meets timing on the 76.8 MHz kernel clock, and

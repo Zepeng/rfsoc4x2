@@ -130,6 +130,11 @@ set pps_aresetn_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /pp
 set pps_in_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/pps_in]]]
 set pps_in_ports [get_bd_ports -quiet -of_objects [get_bd_nets -of_objects [get_bd_pins /pps_trigger_axis_0/pps_in]]]
 set pps_ila_clk_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/clk]]]
+set pps_ila_probe0_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/probe0]]]
+set pps_ila_probe1_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/probe1]]]
+set pps_ila_probe2_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/probe2]]]
+set pps_ila_probe3_net [get_property NAME [get_bd_nets -of_objects [get_bd_pins /ila_pps_trigger/probe3]]]
+set pps_ila_probe4_pins [llength [get_bd_pins -quiet /ila_pps_trigger/probe4]]
 set pps_ila_probes [print_prop $pps_ila CONFIG.C_NUM_OF_PROBES]
 set pfm_m00_tag ""
 set pfm_m02_tag ""
@@ -210,6 +215,11 @@ puts "pps_trigger_axis_0/pps_in net = $pps_in_net"
 puts "pps_trigger_axis_0/pps_in external port = $pps_in_ports"
 puts "ila_pps_trigger/clk net = $pps_ila_clk_net"
 puts "ila_pps_trigger probe count = $pps_ila_probes"
+puts "ila_pps_trigger/probe0 net = $pps_ila_probe0_net"
+puts "ila_pps_trigger/probe1 net = $pps_ila_probe1_net"
+puts "ila_pps_trigger/probe2 net = $pps_ila_probe2_net"
+puts "ila_pps_trigger/probe3 net = $pps_ila_probe3_net"
+puts "ila_pps_trigger/probe4 pin count = $pps_ila_probe4_pins"
 puts "PFM m00_axis sptag = $pfm_m00_tag"
 puts "PFM m02_axis sptag = $pfm_m02_tag"
 puts "PFM m20_axis sptag = $pfm_m20_tag"
@@ -354,8 +364,23 @@ if {$pfm_pps_tag ne "PPS_TRIG_AXIS"} {
   puts "ERROR: Expected PPS m_axis PFM sptag to be PPS_TRIG_AXIS"
   incr failures
 }
-if {$pps_ila_probes ne "5"} {
-  puts "ERROR: Expected ila_pps_trigger to have 5 probes"
+if {$pps_ila_probes ne "4"} {
+  puts "ERROR: Expected ila_pps_trigger to have 4 probes"
+  incr failures
+}
+foreach {probe_name actual_net expected_net} [list \
+  probe0 $pps_ila_probe0_net pps_trigger_sync_level \
+  probe1 $pps_ila_probe1_net pps_trigger_axis_level \
+  probe2 $pps_ila_probe2_net pps_trigger_axis_valid \
+  probe3 $pps_ila_probe3_net proc_sys_reset_clk_adc0_peripheral_aresetn \
+] {
+  if {$actual_net ne $expected_net} {
+    puts "ERROR: Expected ila_pps_trigger/$probe_name to use $expected_net, got $actual_net"
+    incr failures
+  }
+}
+if {$pps_ila_probe4_pins != 0} {
+  puts "ERROR: Expected ila_pps_trigger/probe4 to be absent"
   incr failures
 }
 foreach {name value expected} [list \
