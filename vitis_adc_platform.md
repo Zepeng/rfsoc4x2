@@ -354,11 +354,12 @@ If you previously built the single-stream version or a platform without RFDC clo
      modprobe spidev
      ```
      The expected SPI devices are `spi0.0`, `spi0.1`, and `spi0.2`. The `/dev/spidev*` nodes may not exist yet; the `xrfclk` package binds these SPI devices to `spidev` when it runs.
-   - Install the Python package and run the script on the board:
+   - Unpack the pure-Python package and run the script on the board. This does
+     not require `python3-pip`:
      ```shell
      cd /home/root
-     python3 -m pip install ./xrfclk-2.0.tar.gz
-     python3 ./set_ref_clocks.py
+     tar -xzf ./xrfclk-2.0.tar.gz
+     PYTHONPATH=/home/root/xrfclk-2.0 python3 ./set_ref_clocks.py
      ls /dev/spidev*
      ```
      The script should create `/dev/spidev0.0`, `/dev/spidev0.1`, and `/dev/spidev0.2` and program the LMK04828 and LMX2594 chips for the ADC reference clocks.
@@ -373,7 +374,8 @@ If you previously built the single-stream version or a platform without RFDC clo
      done
 
      ls /dev/spidev*
-     python3 /home/root/set_ref_clocks.py
+     PYTHONPATH=/home/root/xrfclk-2.0 \
+       python3 /home/root/set_ref_clocks.py
      ```
 5. Run the `test_adc` app to grab samples from the ADC:
    ```shell
@@ -459,7 +461,8 @@ Complete this test after the PPS-enabled Vitis build. The purpose is to verify s
 
    ```shell
    modprobe spidev
-   python3 /home/root/set_ref_clocks.py
+   PYTHONPATH=/home/root/xrfclk-2.0 \
+     python3 /home/root/set_ref_clocks.py
    ls /dev/spidev*
    ```
 
