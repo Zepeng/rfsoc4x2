@@ -19,8 +19,9 @@
 * 7/20/2023
 */
 
-#include "xcl2.hpp"
-#include "ap_int.h"
+#include <xrt/xrt_bo.h>
+#include <xrt/xrt_device.h>
+#include <xrt/xrt_kernel.h>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -32,6 +33,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -46,7 +48,14 @@
 #define CHANNEL_COUNT 4
 #define PACKED_WIDTH (CHANNEL_COUNT * STREAM_WIDTH)
 
-typedef ap_uint<PACKED_WIDTH> data_t;
+static_assert(PACKED_WIDTH == 512, "Host packing expects four 128-bit streams");
+
+struct alignas(64) data_t {
+    std::array<uint64_t, PACKED_WIDTH / 64> words{};
+};
+
+static_assert(sizeof(data_t) == PACKED_WIDTH / 8,
+              "Host packed word must match the 512-bit kernel interface");
 
 static const size_t SAMPLES_PER_WORD = STREAM_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
@@ -385,7 +394,7 @@ static void send_udp_frame(int fd,
 }
 
 static void pack_interleaved_channel_samples(
-    const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data,
+    const std::vector<data_t>& source_hw_data,
     std::vector<int16_t>& samples)
 {
     if (source_hw_data.size() < PACKED_WORDS_PER_FRAME) {
@@ -395,23 +404,16 @@ static void pack_interleaved_channel_samples(
     samples.clear();
     samples.reserve(SAMPLES_PER_FRAME * CHANNEL_COUNT);
     for (size_t i = 0; i < DATA_SIZE; ++i) {
-        ap_uint<STREAM_WIDTH> data_word =
-            source_hw_data[i].range(STREAM_WIDTH - 1, 0);
-        ap_uint<STREAM_WIDTH> trigger_word =
-            source_hw_data[i].range(2 * STREAM_WIDTH - 1, STREAM_WIDTH);
-        ap_uint<STREAM_WIDTH> adc_b_word =
-            source_hw_data[i].range(3 * STREAM_WIDTH - 1, 2 * STREAM_WIDTH);
-        ap_uint<STREAM_WIDTH> adc_a_word =
-            source_hw_data[i].range(4 * STREAM_WIDTH - 1, 3 * STREAM_WIDTH);
+        const data_t& packed_word = source_hw_data[i];
         for (size_t j = 0; j < SAMPLES_PER_WORD; ++j) {
-            samples.push_back(static_cast<int16_t>(static_cast<short>(data_word & 0xffff)));
-            samples.push_back(static_cast<int16_t>(static_cast<short>(trigger_word & 0xffff)));
-            samples.push_back(static_cast<int16_t>(static_cast<short>(adc_b_word & 0xffff)));
-            samples.push_back(static_cast<int16_t>(static_cast<short>(adc_a_word & 0xffff)));
-            data_word >>= 16;
-            trigger_word >>= 16;
-            adc_b_word >>= 16;
-            adc_a_word >>= 16;
+            size_t word_in_stream = j / 4;
+            size_t shift = (j % 4) * 16;
+            for (size_t stream = 0; stream < CHANNEL_COUNT; ++stream) {
+                size_t packed_index = stream * (STREAM_WIDTH / 64) + word_in_stream;
+                uint16_t sample =
+                    static_cast<uint16_t>((packed_word.words[packed_index] >> shift) & 0xffff);
+                samples.push_back(static_cast<int16_t>(sample));
+            }
         }
     }
 }
@@ -429,19 +431,20 @@ struct FrameMetadata {
 };
 
 static FrameMetadata extract_frame_metadata(
-    const std::vector<data_t, aligned_allocator<data_t> >& source_hw_data)
+    const std::vector<data_t>& source_hw_data)
 {
     if (source_hw_data.size() < PACKED_WORDS_PER_TRANSFER) {
         throw std::runtime_error("Hardware buffer does not contain BDT metadata");
     }
 
     FrameMetadata metadata;
-    data_t metadata_word = source_hw_data[PACKED_WORDS_PER_FRAME];
-    uint32_t score_bits = static_cast<uint32_t>(metadata_word.range(31, 0));
+    uint64_t metadata_low64 =
+        source_hw_data[PACKED_WORDS_PER_FRAME].words[0];
+    uint32_t score_bits = static_cast<uint32_t>(metadata_low64);
     metadata.bdt_score_raw = static_cast<int32_t>(score_bits);
-    metadata.metadata_low64 = static_cast<uint64_t>(metadata_word.range(63, 0));
-    metadata.bdt_score_valid = (metadata_word.range(32, 32) != 0);
-    metadata.bdt_score_real = (metadata_word.range(33, 33) != 0);
+    metadata.metadata_low64 = metadata_low64;
+    metadata.bdt_score_valid = ((metadata_low64 >> 32) & 1U) != 0;
+    metadata.bdt_score_real = ((metadata_low64 >> 33) & 1U) != 0;
     return metadata;
 }
 
@@ -477,82 +480,58 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    size_t vector_size_bytes = sizeof(data_t) * PACKED_WORDS_PER_TRANSFER;
-    cl_int err;
-    cl::Context context;
-    cl::Kernel krnl;
-    cl::CommandQueue q;
-
-    std::vector<data_t, aligned_allocator<data_t> > source_hw_data(PACKED_WORDS_PER_TRANSFER);
-    for (size_t i = 0; i < source_hw_data.size(); i++) {
-        source_hw_data[i] = 99;
-    }
-
-    auto devices = xcl::get_xil_devices();
-    auto fileBuf = xcl::read_binary_file(options.binary_file);
-    cl::Program::Binaries bins{{fileBuf.data(), fileBuf.size()}};
-    bool valid_device = false;
-    for (unsigned int i = 0; i < devices.size(); i++) {
-        auto device = devices[i];
-        OCL_CHECK(err, context = cl::Context(device, nullptr, nullptr, nullptr, &err));
-        OCL_CHECK(err, q = cl::CommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &err));
-        std::cout << "Trying to program device[" << i << "]: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
-        cl::Program program(context, {device}, bins, nullptr, &err);
-        if (err != CL_SUCCESS) {
-            std::cout << "Failed to program device[" << i << "] with xclbin file!\n";
-        } else {
-            std::cout << "Device[" << i << "]: program successful!\n";
-            OCL_CHECK(err, krnl = cl::Kernel(program, "dummy_kernel", &err));
-            valid_device = true;
-            break;
-        }
-    }
-    if (!valid_device) {
-        std::cout << "Failed to program any device found, exit!\n";
-        return EXIT_FAILURE;
-    }
-
-    OCL_CHECK(err, cl::Buffer buffer(context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, vector_size_bytes,
-                                    source_hw_data.data(), &err));
-
-    unsigned int size = DATA_SIZE;
-    unsigned int output_words = PACKED_WORDS_PER_TRANSFER;
-    OCL_CHECK(err, err = krnl.setArg(0, buffer));
-    OCL_CHECK(err, err = krnl.setArg(6, size));
-    OCL_CHECK(err, err = krnl.setArg(7, output_words));
-
     int socket_fd = -1;
-    if (options.stream_mode != StreamMode::NONE) {
-        socket_fd = open_socket(options);
-        std::cout << "Streaming "
-                  << ((options.stream_mode == StreamMode::TCP) ? "TCP" : "UDP")
-                  << " frames to " << options.host << ":" << options.port
-                  << " at " << options.frame_rate_hz << " Hz\n";
-    }
-    size_t pretrigger_words = PACKED_WORDS_PER_FRAME / 5;
-    size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
-    std::cout << "External PPS trigger on PPS_TRIG_AXIS rising edge\n"
-              << "Accepted events also require max(ADC_D + ADC_C + ADC_B + ADC_A) < 200\n"
-              << "BDT score is printed for accepted threshold events but does not select events\n"
-              << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
-              << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
-              << "Trigger word is near sample " << pretrigger_samples
-              << " of " << SAMPLES_PER_FRAME << " per-channel samples\n";
-
-    std::vector<int16_t> samples;
-    uint64_t sample_rate_hz = sample_rate_header_value(options.sample_rate_hz);
-    uint64_t frame_id = 0;
-    auto next_frame_time = std::chrono::steady_clock::now();
-    auto frame_period = std::chrono::duration<double>(1.0 / options.frame_rate_hz);
-
     try {
+        size_t vector_size_bytes = sizeof(data_t) * PACKED_WORDS_PER_TRANSFER;
+        std::vector<data_t> source_hw_data(PACKED_WORDS_PER_TRANSFER);
+
+        xrt::device device(0);
+        std::cout << "Programming device[0] with " << options.binary_file << "\n";
+        auto uuid = device.load_xclbin(options.binary_file);
+        std::cout << "Device[0]: program successful!\n";
+        xrt::kernel krnl(device, uuid, "dummy_kernel");
+        xrt::bo buffer(device, vector_size_bytes, krnl.group_id(0));
+
+        if (options.stream_mode != StreamMode::NONE) {
+            socket_fd = open_socket(options);
+            std::cout << "Streaming "
+                      << ((options.stream_mode == StreamMode::TCP) ? "TCP" : "UDP")
+                      << " frames to " << options.host << ":" << options.port
+                      << " at " << options.frame_rate_hz << " Hz\n";
+        }
+        size_t pretrigger_words = PACKED_WORDS_PER_FRAME / 5;
+        size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
+        std::cout << "External PPS trigger on PPS_TRIG_AXIS rising edge\n"
+                  << "Accepted events also require max(ADC_D + ADC_C + ADC_B + ADC_A) < 200\n"
+                  << "BDT score is printed for accepted threshold events but does not select events\n"
+                  << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
+                  << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
+                  << "Trigger word is near sample " << pretrigger_samples
+                  << " of " << SAMPLES_PER_FRAME << " per-channel samples\n";
+
+        std::vector<int16_t> samples;
+        uint64_t sample_rate_hz = sample_rate_header_value(options.sample_rate_hz);
+        uint64_t frame_id = 0;
+        auto next_frame_time = std::chrono::steady_clock::now();
+        auto frame_period = std::chrono::duration<double>(1.0 / options.frame_rate_hz);
+
         while (options.frames == 0 || frame_id < options.frames) {
             if (frame_id == 0 || (frame_id % 60) == 0) {
                 std::cout << "Waiting for trigger for frame " << frame_id << "\n";
             }
-            OCL_CHECK(err, err = q.enqueueTask(krnl));
-            OCL_CHECK(err, err = q.enqueueMigrateMemObjects({buffer}, CL_MIGRATE_MEM_OBJECT_HOST));
-            q.finish();
+            xrt::run run(krnl);
+            run.set_arg(0, buffer);
+            run.set_arg(6, static_cast<unsigned int>(DATA_SIZE));
+            run.set_arg(7, static_cast<unsigned int>(PACKED_WORDS_PER_TRANSFER));
+            run.start();
+            auto state = run.wait();
+            if (state != ERT_CMD_STATE_COMPLETED) {
+                throw std::runtime_error(
+                    "Kernel did not complete; ERT state=" +
+                    std::to_string(static_cast<int>(state)));
+            }
+            buffer.sync(XCL_BO_SYNC_BO_FROM_DEVICE, vector_size_bytes, 0);
+            buffer.read(source_hw_data.data(), vector_size_bytes, 0);
 
             FrameMetadata metadata = extract_frame_metadata(source_hw_data);
             if (metadata.bdt_score_valid) {
