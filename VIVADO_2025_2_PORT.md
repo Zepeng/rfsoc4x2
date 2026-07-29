@@ -318,9 +318,10 @@ test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xo
 Vitis 2025.2 HLS mode uses `freqhz` when an HLS component targets a platform.
 Do not copy the legacy `[hls] clock=76800000:dummy_kernel` setting into this
 configuration. The HLS configuration packages the `.xo` as part of C
-synthesis. Its source and output paths are relative to
-`build/vitis_dummy_kernel_2025_2`, because Vitis changes to the parent of
-`--work_dir` before resolving HLS configuration paths.
+synthesis. Vitis 2025.2 resolves `syn.file` from the parent of `--work_dir`,
+but resolves `package.output.file` from the HLS configuration file's
+directory. The checked-in relative paths account for these two bases and place
+the `.xo` in `build/vitis_dummy_kernel_2025_2`.
 
 Review the generated HLS synthesis report before linking. In particular,
 confirm a 76.8 MHz target and `II=1` for the acquisition and waveform-write
