@@ -23,11 +23,15 @@ PetaLinux 2025.2 project has built successfully with XRT, ZOCL, the installed
 SDK sysroot, user-mode SPI, and the corrected RFSoC4x2 SPI, SD, and Ethernet
 device-tree nodes. Vitis 2025.2 has also built and exported the
 `rfsoc_adc_vitis_platform_2025_2` platform with FSBL, PMU firmware, and Linux
-`xrt` domains; the reported platform build status was zero.
+`xrt` domains; the reported platform build status was zero. Independent
+`platforminfo` inspection confirmed `clk_adc0` as clock ID 3 at 76.8 MHz,
+`clk_adc2` as clock ID 4 at 76.8 MHz, and all five platform stream tags:
+`RFDC_DATA_AXIS`, `RFDC_TRIG_AXIS`, `RFDC_ADC_B_AXIS`,
+`RFDC_ADC_A_AXIS`, and `PPS_TRIG_AXIS`.
 
-The next gate is independent `platforminfo` verification of clock IDs 3 and 4
-and all five stream tags. Synthesis, implementation, Vitis kernel linking,
-packaging, and board validation remain pending.
+The next gate is HLS synthesis and packaging of the dummy kernel, followed by
+Vitis linking and implementation against the exported platform. System
+packaging and board validation remain pending.
 
 ## Confirmed 2025.2 Migration Findings
 
@@ -274,8 +278,8 @@ Resolve any further API-specific error against the installed API reference:
 <VITIS_INSTALL>/cli/api_docs/build/html/vitis.html
 ```
 
-After the platform builds, use `platforminfo` to verify clock ID 3 and the five
-stream tags before creating an application.
+After the platform builds, use `platforminfo` to verify clock IDs 3 and 4 and
+the five stream tags before creating an application.
 
 ## Phase 5: HLS and Hardware Validation
 
@@ -286,6 +290,69 @@ Build the dummy-BDT kernel first. Preserve:
 - Four RFDC stream connections plus `PPS_TRIG_AXIS`.
 - One 512-bit `gmem0` output buffer.
 - 2048 capture words plus one metadata word.
+
+The repository provides separate Vitis 2025.2 HLS and link configurations:
+
+- `src/vitis_adc_platform/dummy_kernel_hls_2025_2.cfg`
+- `src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg`
+
+Run the flow from the repository root after sourcing the Vitis 2025.2
+environment. Set `RFSOC4X2_XPFM` to the exported platform file, not its project
+directory:
+
+```bash
+export RFSOC4X2_XPFM=\
+/absolute/path/to/rfsoc_adc_vitis_platform_2025_2.xpfm
+
+mkdir -p build/vitis_dummy_kernel_2025_2
+
+v++ -c --mode hls \
+  --platform "$RFSOC4X2_XPFM" \
+  --freqhz=76800000 \
+  --config src/vitis_adc_platform/dummy_kernel_hls_2025_2.cfg \
+  --work_dir build/vitis_dummy_kernel_2025_2/hls
+
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xo
+```
+
+Vitis 2025.2 HLS mode uses `freqhz` when an HLS component targets a platform.
+Do not copy the legacy `[hls] clock=76800000:dummy_kernel` setting into this
+configuration. The HLS configuration packages the `.xo` as part of C
+synthesis.
+
+Review the generated HLS synthesis report before linking. In particular,
+confirm a 76.8 MHz target and `II=1` for the acquisition and waveform-write
+pipelines. Then run the hardware link:
+
+```bash
+v++ -l -t hw \
+  --platform "$RFSOC4X2_XPFM" \
+  --config src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg \
+  --temp_dir build/vitis_dummy_kernel_2025_2/link \
+  --log_dir build/vitis_dummy_kernel_2025_2/logs \
+  --save-temps \
+  -o build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin \
+  build/vitis_dummy_kernel_2025_2/dummy_kernel.xo
+
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
+```
+
+The link configuration explicitly names the single compute unit
+`dummy_kernel_1`, binds it to platform clock ID 3, and connects all five
+platform streams. It intentionally omits an `sp` mapping for `buffer0`; Vitis
+automatically selects an available platform memory resource when no explicit
+mapping is supplied. Record that generated mapping from the link report before
+deciding whether to pin it.
+
+Archive the Vitis and Vivado link reports. The first link is accepted only if
+it finishes without errors, meets timing on the 76.8 MHz kernel clock, and
+contains exactly the expected stream connections. Inspect the resulting
+container with:
+
+```bash
+xclbinutil --info \
+  --input build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
+```
 
 Only enable `USE_CONIFER_BDT` after the dummy build works. The real BDT depends
 on ignored, externally generated files in `csi_bdt_prj_kv260/firmware`; pin or
