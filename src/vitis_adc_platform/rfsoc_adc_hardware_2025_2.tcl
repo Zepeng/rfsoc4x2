@@ -206,6 +206,28 @@ set migrated_text [string map [list \
   {Vivado Synthesis 2023} {Vivado Synthesis 2025} \
   {Vivado Implementation 2023} {Vivado Implementation 2025} \
 ] $legacy_text]
+
+# Project Tcl exported by Vivado 2023.2.1 includes session message filters and
+# file metadata that should not be replayed in 2025.2. In particular, LIBRARY
+# is now read-only on the generated block-design file. These lines do not
+# describe design behavior, interfaces, clocks, or constraints.
+set incompatible_generated_lines [list \
+  {set_msg_config  -severity {STATUS}  -suppress  -ruleid {1}  -source 2} \
+  {set_msg_config  -severity {INFO}  -suppress  -ruleid {2}  -source 2} \
+  {set_msg_config  -severity {WARNING}  -suppress  -ruleid {3}  -source 2} \
+  {set_msg_config  -severity {CRITICAL WARNING}  -suppress  -ruleid {4}  -source 2} \
+  {set_property LIBRARY "xil_defaultlib" [get_files system.bd ]} \
+]
+foreach generated_line $incompatible_generated_lines {
+  if {[string first $generated_line $migrated_text] < 0} {
+    ::rfsoc_adc_2025_2::fail \
+      "the 2023.2.1 source changed: compatibility line was not found: $generated_line"
+  }
+  set replacement \
+    "# Vivado 2025.2 migration: omitted generated session/file metadata"
+  set migrated_text [string map [list $generated_line $replacement] $migrated_text]
+}
+
 foreach stale_flow {
   {Vivado Synthesis 2023}
   {Vivado Implementation 2023}
@@ -288,7 +310,14 @@ if {[catch {report_ip_status -file $ip_status_report -force} ip_status_message]}
 if {[catch {
   set_property platform.platform_state "pre_synth" [current_project]
 } platform_state_message]} {
+  if {$export_xsa ne "" || $export_hw_emu_xsa ne ""} {
+    ::rfsoc_adc_2025_2::fail \
+      "cannot mark the project as a pre-synthesis extensible platform: $platform_state_message"
+  }
   puts "WARNING: Could not set platform.platform_state to pre_synth: $platform_state_message"
+} elseif {[get_property platform.platform_state [current_project]] ne "pre_synth"} {
+  ::rfsoc_adc_2025_2::fail \
+    "Vivado did not retain platform.platform_state=pre_synth"
 }
 
 if {$run_build} {
@@ -300,7 +329,7 @@ if {$run_build} {
 if {$export_xsa ne ""} {
   file mkdir [file dirname $export_xsa]
   write_hw_platform -hw -force -file $export_xsa
-  puts "INFO: Wrote hardware XSA to $export_xsa"
+  puts "INFO: Wrote pre-synthesis extensible hardware XSA to $export_xsa"
 }
 
 if {$export_hw_emu_xsa ne ""} {

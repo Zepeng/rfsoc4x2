@@ -1,0 +1,59 @@
+/*
+ * RFSoC4x2 board-level additions for the PetaLinux 2025.2 port.
+ *
+ * This preserves the known-good 2023.2 SD boot, reference-clock SPI, and
+ * Ethernet configuration. Revalidate every node against the generated 2025.2
+ * system-conf.dtsi before using the image on hardware.
+ */
+
+/include/ "system-conf.dtsi"
+
+/ {
+	chosen {
+		bootargs = "earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rootwait rw sdhci.debug_quirks2=4";
+		stdout-path = "serial0:115200n8";
+	};
+};
+
+&sdhci0 {
+	no-1-8-v;
+};
+
+&spi0 {
+	status = "okay";
+
+	lmk@0 {
+		compatible = "ti,lmk04828";
+		reg = <0x0>;
+		spi-max-frequency = <500000>;
+		num_bytes = <3>;
+	};
+
+	lmxdac@1 {
+		compatible = "ti,lmx2594";
+		reg = <0x1>;
+		spi-max-frequency = <500000>;
+		num_bytes = <3>;
+	};
+
+	lmxadc@2 {
+		compatible = "ti,lmx2594";
+		reg = <0x2>;
+		spi-max-frequency = <500000>;
+		num_bytes = <3>;
+	};
+};
+
+&gem1 {
+	status = "okay";
+	phy-handle = <&phy0>;
+	phy-mode = "rgmii-id";
+
+	phy0: phy@f {
+		reg = <0xf>;
+		ti,rx-internal-delay = <0x8>;
+		ti,tx-internal-delay = <0xa>;
+		ti,fifo-depth = <0x1>;
+		ti,dp83867-rxctrl-strap-quirk;
+	};
+};

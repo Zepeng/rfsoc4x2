@@ -20,12 +20,27 @@ import os
 import shutil
 from pathlib import Path
 
-import vitis
-
-
 PLATFORM_NAME = "rfsoc_adc_vitis_platform_2025_2"
 DOMAIN_NAME = "xrt"
 DEFAULT_CPU = "psu_cortexa53_0"
+
+
+def load_vitis_api():
+    try:
+        import vitis
+    except ModuleNotFoundError as error:
+        if error.name != "vitis":
+            raise
+        raise SystemExit(
+            "The Vitis Python API is unavailable in this interpreter.\n"
+            "Run this script with the Vitis 2025.2 batch launcher:\n"
+            "  vitis -s "
+            "src/vitis_adc_platform/"
+            "create_rfsoc_adc_vitis_platform_2025_2.py\n"
+            "Do not run it with python or python3. If the command still fails, "
+            "check `command -v vitis` and `vitis -v`."
+        ) from None
+    return vitis
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,6 +155,7 @@ def require_method(obj: object, method_name: str):
 
 def main() -> None:
     args = parse_args()
+    vitis = load_vitis_api()
     workspace = args.workspace.expanduser().resolve()
     xsa = require_file(args.xsa)
     linux_image_dir = args.linux_image_dir.expanduser().resolve()
