@@ -376,7 +376,8 @@ achieved `II=1`, and `write_triggered_waveform` estimate 9.505 ns with
 achieved `II=1`. Its 2052-cycle, 26.719 us writeout latency is consistent with
 the 76.8 MHz target. The unknown latency of the outer
 `capture_external_trigger` loop is intentional because it waits for an
-external PPS edge and may retry a rejected candidate.
+external PPS edge. It may also retry a rejected candidate when an optional
+sum gate is enabled.
 
 ```bash
 v++ -l -t hw \
@@ -390,6 +391,24 @@ v++ -l -t hw \
 
 test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
 ```
+
+The kernel interface has two runtime sum-gate arguments after `output_words`.
+The matching host supplies them as XRT arguments 8 and 9:
+
+- No sum option: accept the next complete PPS capture. This is the default and
+  does not reject high-amplitude inputs.
+- `--sum-veto <counts>`: reject a PPS candidate if any four-channel signed sum
+  is greater than or equal to the threshold. `--sum-veto 200` reproduces the
+  legacy behavior.
+- `--sum-trigger <counts>`: require at least one four-channel signed sum at or
+  above the threshold.
+
+The old fixed `200`-count veto caused `test_adc` to wait forever at higher
+input amplitudes: each PPS candidate was discarded internally and the kernel
+waited for another PPS. After changing this interface, rebuild HLS, relink,
+repackage, and cross-compile the host. Deploy the newly packaged `BOOT.BIN`,
+the new `dummy_kernel.xclbin`, and the new `test_adc` together. PetaLinux, the
+Vitis platform, and the extensible XSA do not need to be rebuilt.
 
 The link configuration explicitly names the single compute unit
 `dummy_kernel_1`, binds it to platform clock ID 3, and connects all five
@@ -439,8 +458,8 @@ test -x build/vitis_dummy_kernel_2025_2/test_adc
 ```
 
 `file` must report an ARM AArch64 executable. Copy it beside the matching
-linked xclbin on the FAT32 boot partition; this userspace-only addition does
-not require rebuilding PetaLinux, the platform, or the xclbin.
+linked xclbin on the FAT32 boot partition. Host-only changes do not require
+rebuilding the xclbin, but any kernel signature or logic change does.
 
 ```bash
 sudo mkdir -p /mnt/rfsoc4x2-boot

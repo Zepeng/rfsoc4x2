@@ -30,7 +30,9 @@
 #define CAPTURE_WORDS 2048
 #define PRETRIGGER_WORDS (CAPTURE_WORDS / 5)
 #define POSTTRIGGER_WORDS (CAPTURE_WORDS - PRETRIGGER_WORDS - 1)
-#define SUM_MAX_THRESHOLD 200
+#define SUM_GATE_DISABLED 0
+#define SUM_GATE_VETO 1
+#define SUM_GATE_REQUIRE 2
 #define BDT_SOURCE_BINS 1250
 #define DUMMY_BDT_FEATURES 250
 #define BDT_SCORE_FRAC_BITS 10
@@ -93,6 +95,7 @@ static void summarize_sum_word(ap_uint<STREAM_WIDTH> data_word,
                                ap_uint<STREAM_WIDTH> trigger_word,
                                ap_uint<STREAM_WIDTH> adc_b_word,
                                ap_uint<STREAM_WIDTH> adc_a_word,
+                               sum_sample_t sum_threshold,
                                bool& word_over_threshold,
                                sum_sample_t& word_average)
 {
@@ -114,7 +117,7 @@ sum_word_lanes:
             (sum_sample_t)sign_extend_sample(adc_b_raw) +
             (sum_sample_t)sign_extend_sample(adc_a_raw);
         accumulator += (sum_accum_t)sum_sample;
-        if (sum_sample >= SUM_MAX_THRESHOLD) {
+        if (sum_sample >= sum_threshold) {
             over_threshold = true;
         }
     }
@@ -198,7 +201,9 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
                   hls::stream<pkt>& adc_a_in,
                   hls::stream<trigger_pkt>& ext_trigger_in,
                   unsigned int size,
-                  unsigned int output_words) {
+                  unsigned int output_words,
+                  unsigned int sum_gate_mode,
+                  int sum_threshold) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
 #pragma HLS INTERFACE axis port = data_in
 #pragma HLS INTERFACE axis port = trigger_in
@@ -209,6 +214,7 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
     if (size != CAPTURE_WORDS || output_words < OUTPUT_WORDS) {
         return;
     }
+    sum_sample_t active_sum_threshold = (sum_sample_t)sum_threshold;
 
     ap_uint<PACKED_WIDTH> capture_buffer[CAPTURE_WORDS];
 #pragma HLS BIND_STORAGE variable=capture_buffer type=ram_2p impl=uram latency=2
@@ -273,6 +279,7 @@ capture_external_trigger:
                                trigger_word,
                                adc_b_word,
                                adc_a_word,
+                               active_sum_threshold,
                                word_over_threshold,
                                word_average);
 
@@ -323,8 +330,14 @@ capture_external_trigger:
             }
         }
 
-        bool sum_max_accept = (over_threshold_count == 0);
-        if (sum_max_accept) {
+        bool has_over_threshold = (over_threshold_count != 0);
+        bool sum_gate_accept = true;
+        if (sum_gate_mode == SUM_GATE_VETO) {
+            sum_gate_accept = !has_over_threshold;
+        } else if (sum_gate_mode == SUM_GATE_REQUIRE) {
+            sum_gate_accept = has_over_threshold;
+        }
+        if (sum_gate_accept) {
             event_accepted = true;
         } else {
             triggered = false;

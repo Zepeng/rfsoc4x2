@@ -1,17 +1,17 @@
 # Four-Channel Sum Threshold and BDT Trigger
 
 This note documents the current trigger implementation for the RFSoC four-stream
-ADC kernel. The max-threshold trigger has passed board testing. The kernel now
-also has a BDT score path based on `csi_bdt_prj_kv260`, with the BDT score printed
-by the host but not yet used for event selection.
+ADC kernel. The kernel has a BDT score path based on `csi_bdt_prj_kv260`, with
+the BDT score printed by the host but not yet used for event selection.
 
-Event selection is still:
+Default event selection is:
 
 ```cpp
-external PPS rising edge && max(ADC_D + ADC_C + ADC_B + ADC_A) < 200
+external PPS rising edge
 ```
 
-The BDT output is diagnostic readout for the next board test.
+The host can optionally add a runtime sum veto or sum trigger. The BDT output
+remains diagnostic readout for board testing.
 
 ## Source Files
 
@@ -50,7 +50,8 @@ For every stream word, the acquisition loop:
 1. Packs the four raw ADC words into the 512-bit waveform ring buffer.
 2. Sign-extends all eight lanes from all four channels.
 3. Computes `sum_sample = ADC_D + ADC_C + ADC_B + ADC_A` for each lane.
-4. Marks the word over threshold if any lane has `sum_sample >= 200`.
+4. Marks the word over threshold if any lane has
+   `sum_sample >= sum_threshold`.
 5. Maintains `over_threshold_ring[2048]` and `over_threshold_count`.
 6. Computes the eight-lane average of the sum waveform.
 7. Downsamples the 2048 capture words into `downsample_history[1250]`.
@@ -58,10 +59,12 @@ For every stream word, the acquisition loop:
 The max-threshold tracking and downsample writes run inside the same pipelined
 capture loop as the waveform ring-buffer write.
 
-When the PPS candidate completes, the FPGA accepts only candidates with:
+When the PPS candidate completes, the runtime `sum_gate_mode` selects one of:
 
-```cpp
-bool sum_max_accept = (over_threshold_count == 0);
+```text
+disabled: accept the complete PPS candidate
+veto:     accept only when over_threshold_count == 0
+require:  accept only when over_threshold_count != 0
 ```
 
 For accepted candidates, the kernel copies the waveform to DDR and gathers the
@@ -69,8 +72,8 @@ BDT features inside the same pipelined writeout loop (the gather rides along in
 the first 250 iterations, reading `downsample_history` while the waveform words
 come from `capture_buffer`). After the loop, the BDT score is computed in a few
 cycles and written as one metadata word. The BDT therefore adds essentially no
-latency on top of the waveform readout. Rejected candidates are discarded
-internally and the kernel waits for the next PPS candidate.
+latency on top of the waveform readout. If a sum gate rejects a candidate, it is
+discarded internally and the kernel waits for the next PPS candidate.
 
 ## BDT Modes
 
@@ -312,10 +315,20 @@ Run the host with the matching host executable and xclbin:
 ./test_adc dummy_kernel.xclbin
 ```
 
+This default run disables the sum gate, so both low- and high-amplitude PPS
+captures should complete. To reproduce the old fixed veto or require a positive
+sum crossing:
+
+```shell
+./test_adc dummy_kernel.xclbin --sum-veto 200
+./test_adc dummy_kernel.xclbin --sum-trigger 200
+```
+
 Expected real-BDT host output includes:
 
 ```text
-BDT score is printed for accepted threshold events but does not select events
+Sum gate disabled: every armed PPS candidate is accepted
+BDT score is printed but does not select events
 Frame 0 BDT score: <score> (raw <raw>)
 ```
 
@@ -354,7 +367,9 @@ Board-test checklist:
 
 - HLS acquisition loop remains `II=1`.
 - `wave.txt` still has four columns and `16384` per-channel samples.
-- Candidates with `max(sum) >= 200` are rejected internally.
+- A default run completes at both sides of the former 10 mVpp boundary.
+- `--sum-veto 200` rejects candidates with `max(sum) >= 200`.
+- `--sum-trigger 200` accepts candidates with `max(sum) >= 200`.
 - Real-BDT builds print `Frame N BDT score`, not `dummy BDT score`.
 - The BDT score does not affect event selection.
 - With the correct `norm_stats.npy`, compare the printed score against an

@@ -398,11 +398,17 @@ If you previously built the single-stream version or a platform without RFDC clo
    External PPS trigger on PPS_TRIG_AXIS rising edge
    Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A
    Trigger word is near sample 3272 of 16384 per-channel samples
+   Sum gate disabled: every armed PPS candidate is accepted
+   BDT score is printed but does not select events
    Waiting for trigger for frame 0
    Writing data to wave.txt
    ```
    The samples are stored in the file `wave.txt`.
-   The FPGA trigger decision uses only `PPS_TRIG_AXIS`. Drive the board `1PPS` SMA with a valid pulse before expecting the app to complete.
+   With no sum option, the FPGA trigger decision uses only `PPS_TRIG_AXIS`.
+   Drive the board `1PPS` SMA with a valid pulse before expecting the app to
+   complete. `--sum-veto <counts>` adds an upper sum veto; `--sum-trigger
+   <counts>` instead requires a sum crossing. Do not use either option for the
+   initial amplitude test.
    `wave.txt` and the Ethernet stream contain four columns/channels: `RFDC_DATA_AXIS`/ADC_D, `RFDC_TRIG_AXIS`/ADC_C, `RFDC_ADC_B_AXIS`/ADC_B, and `RFDC_ADC_A_AXIS`/ADC_A. Each frame contains about 20% pretrigger and 80% post-trigger samples; for the default frame size, the trigger word is near sample `3272`.
    Check the captured samples with:
    ```shell
@@ -430,7 +436,13 @@ If you previously built the single-stream version or a platform without RFDC clo
 
    The rebuilt common-clock design should produce a continuous waveform with no periodic jumps. Verify this on the board before analyzing the measured period.
 
-   If the program stops at `Waiting for trigger for frame 0`, XRT has programmed the PL and launched the compute unit, but the HLS kernel is probably waiting for a rising edge on `PPS_TRIG_AXIS`. Confirm the PPS pulse at the SMA, re-arm the PPS ILA, and check that `pps_trigger_axis_ready` goes high while the kernel is running. Recheck the reference clock setup above and inspect the XRT logs:
+   If the program stops at `Waiting for trigger for frame 0`, XRT has programmed
+   the PL and launched the compute unit. With no sum option, the HLS kernel is
+   probably waiting for a rising edge on `PPS_TRIG_AXIS`. If a sum option was
+   supplied, it may instead be rejecting every PPS candidate; retry without
+   that option. Confirm the PPS pulse at the SMA, re-arm the PPS ILA, and check
+   that `pps_trigger_axis_ready` goes high while the kernel is running. Recheck
+   the reference clock setup above and inspect the XRT logs:
    ```shell
    dmesg | grep -i -E 'zocl|xrt|fpga|rfdc|spi|clock'
    dmesg | tail -80

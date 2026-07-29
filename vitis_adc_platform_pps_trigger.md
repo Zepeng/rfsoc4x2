@@ -370,7 +370,9 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
                   hls::stream<pkt>& adc_a_in,
                   hls::stream<trigger_pkt>& ext_trigger_in,
                   unsigned int size,
-                  unsigned int output_words) {
+                  unsigned int output_words,
+                  unsigned int sum_gate_mode,
+                  int sum_threshold) {
 #pragma HLS INTERFACE m_axi port = buffer0 bundle = gmem0
 #pragma HLS INTERFACE axis port = data_in
 #pragma HLS INTERFACE axis port = trigger_in
@@ -425,22 +427,31 @@ ADC_C / `trigger_in` is now just readout column 2 — its data path is unchanged
 
 ---
 
+The last two scalar arguments implement the optional channel-sum gate. Mode
+`0` disables it, mode `1` vetoes candidates with a sum at or above the
+threshold, and mode `2` requires such a crossing. PPS-only mode `0` is the
+normal default.
+
 ## 8. Host Application Changes (`host.cpp`)
 
-The kernel now has five AXIS inputs and two scalar args. Update `setArg` (the five AXIS
-streams are connected by the linker, not set here):
+The kernel now has five AXIS inputs and four scalar args. Set the pointer and
+scalar arguments at indexes 0, 6, 7, 8, and 9 (the five AXIS streams are
+connected by the linker, not set here):
 
 ```cpp
-unsigned int size = DATA_SIZE;
-unsigned int output_words = PACKED_WORDS_PER_FRAME;
-OCL_CHECK(err, err = krnl.setArg(0, buffer));
-OCL_CHECK(err, err = krnl.setArg(6, size));          // was 5
-OCL_CHECK(err, err = krnl.setArg(7, output_words));  // was 6; threshold arg removed
+xrt::run run(krnl);
+run.set_arg(0, buffer);
+run.set_arg(6, static_cast<unsigned int>(DATA_SIZE));
+run.set_arg(7, static_cast<unsigned int>(PACKED_WORDS_PER_TRANSFER));
+run.set_arg(8, static_cast<unsigned int>(sum_gate_mode));
+run.set_arg(9, sum_threshold);
 ```
 
 Also:
-- Remove the `--threshold` option, `DEFAULT_TRIGGER_THRESHOLD`, the `trigger_threshold`
-  field, its parsing/validation, and the "FPGA threshold trigger on … ADC_C" messages.
+- Remove the old single-channel `--threshold` option and the "FPGA threshold
+  trigger on … ADC_C" messages.
+- Default `sum_gate_mode` to disabled. Expose `--sum-veto <counts>` and
+  `--sum-trigger <counts>` only when sum-based selection is wanted.
 - Update usage/help text: the trigger is now the external `1PPS` rising edge on
   `IRIG_TRIG_OUT`; ADC_C is a readout channel.
 - `wave.txt` remains four columns: `ADC_D ADC_C ADC_B ADC_A`.

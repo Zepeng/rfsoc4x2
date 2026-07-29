@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -66,13 +67,21 @@ static const size_t PACKED_WORDS_PER_TRANSFER =
 static const double BDT_SCORE_SCALE = 1024.0;
 static const double DEFAULT_SAMPLE_RATE_HZ = 614.4e6;
 static const double DEFAULT_FRAME_RATE_HZ = 1000.0;
+static const int32_t SUM_THRESHOLD_MIN = -(1 << 19);
+static const int32_t SUM_THRESHOLD_MAX = (1 << 19) - 1;
 static const char* HOST_BUILD_TAG =
-    "test_adc host build: PPS plus sum-threshold trigger and BDT score";
+    "test_adc host build: PPS trigger with optional sum gate and BDT score";
 
 enum class StreamMode {
     NONE,
     TCP,
     UDP,
+};
+
+enum class SumGateMode : unsigned int {
+    DISABLED = 0,
+    VETO = 1,
+    REQUIRE = 2,
 };
 
 struct Options {
@@ -86,6 +95,8 @@ struct Options {
     bool save_wave = true;
     std::string wave_file = "wave.txt";
     size_t udp_payload_bytes = 1400;
+    SumGateMode sum_gate_mode = SumGateMode::DISABLED;
+    int32_t sum_threshold = 200;
 };
 
 static void usage(const char* argv0)
@@ -97,8 +108,9 @@ static void usage(const char* argv0)
         << "  " << argv0 << " <XCLBIN File> --tcp <host> <port> [options]\n"
         << "  " << argv0 << " <XCLBIN File> --udp <host> <port> [options]\n\n"
         << "Four-channel build: external 1PPS rising edge arms candidate captures in FPGA.\n"
-        << "The kernel returns only events whose channel-sum waveform passes the\n"
-        << "sum-maximum threshold and prints a BDT score for design verification.\n"
+        << "PPS-only capture is the default. An optional channel-sum gate can veto\n"
+        << "or require candidates at a specified signed ADC-count threshold.\n"
+        << "The kernel prints a BDT score for design verification.\n"
         << "wave.txt rows are: <ADC_D> <ADC_C> <ADC_B> <ADC_A>.\n"
         << "Each waveform contains about 20% pretrigger and 80% post-trigger samples.\n\n"
         << "Options:\n"
@@ -111,7 +123,12 @@ static void usage(const char* argv0)
         << "  --wave <file>        Also save captured samples as text. In streaming\n"
         << "                       mode this file is overwritten each frame.\n"
         << "  --no-wave            Do not write wave.txt in one-shot mode.\n"
-        << "  --udp-payload <B>    Max ADC payload bytes per UDP packet. Default: 1400\n";
+        << "  --udp-payload <B>    Max ADC payload bytes per UDP packet. Default: 1400\n"
+        << "  --sum-veto <counts>  Reject candidates with a four-channel sum at or\n"
+        << "                       above this value. Legacy behavior used 200.\n"
+        << "  --sum-trigger <counts>\n"
+        << "                       Require at least one four-channel sum at or above\n"
+        << "                       this value. The two sum modes are mutually exclusive.\n";
 }
 
 static uint64_t parse_u64(const std::string& value, const std::string& name)
@@ -134,6 +151,19 @@ static double parse_double(const std::string& value, const std::string& name)
         throw std::runtime_error("Invalid number for " + name + ": " + value);
     }
     return result;
+}
+
+static int32_t parse_i32(const std::string& value, const std::string& name)
+{
+    char* end = nullptr;
+    errno = 0;
+    long long result = strtoll(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0' ||
+        result < std::numeric_limits<int32_t>::min() ||
+        result > std::numeric_limits<int32_t>::max()) {
+        throw std::runtime_error("Invalid signed integer for " + name + ": " + value);
+    }
+    return static_cast<int32_t>(result);
 }
 
 static Options parse_args(int argc, char** argv)
@@ -195,6 +225,24 @@ static Options parse_args(int argc, char** argv)
                 throw std::runtime_error("--udp-payload requires a value");
             }
             options.udp_payload_bytes = static_cast<size_t>(parse_u64(argv[i], "--udp-payload"));
+        } else if (arg == "--sum-veto" || arg == "--sum-trigger") {
+            if (++i >= argc) {
+                throw std::runtime_error(arg + " requires a value");
+            }
+            if (options.sum_gate_mode != SumGateMode::DISABLED) {
+                throw std::runtime_error(
+                    "Only one of --sum-veto or --sum-trigger can be used");
+            }
+            options.sum_gate_mode =
+                (arg == "--sum-veto") ? SumGateMode::VETO : SumGateMode::REQUIRE;
+            options.sum_threshold = parse_i32(argv[i], arg);
+            if (options.sum_threshold < SUM_THRESHOLD_MIN ||
+                options.sum_threshold > SUM_THRESHOLD_MAX) {
+                throw std::runtime_error(
+                    arg + " must fit the kernel's signed 20-bit sum range (" +
+                    std::to_string(SUM_THRESHOLD_MIN) + " to " +
+                    std::to_string(SUM_THRESHOLD_MAX) + ")");
+            }
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             exit(EXIT_SUCCESS);
@@ -502,12 +550,20 @@ int main(int argc, char** argv)
         size_t pretrigger_words = PACKED_WORDS_PER_FRAME / 5;
         size_t pretrigger_samples = pretrigger_words * SAMPLES_PER_WORD;
         std::cout << "External PPS trigger on PPS_TRIG_AXIS rising edge\n"
-                  << "Accepted events also require max(ADC_D + ADC_C + ADC_B + ADC_A) < 200\n"
-                  << "BDT score is printed for accepted threshold events but does not select events\n"
                   << "Output columns are RFDC_DATA_AXIS/ADC_D, RFDC_TRIG_AXIS/ADC_C, "
                   << "RFDC_ADC_B_AXIS/ADC_B, and RFDC_ADC_A_AXIS/ADC_A\n"
                   << "Trigger word is near sample " << pretrigger_samples
                   << " of " << SAMPLES_PER_FRAME << " per-channel samples\n";
+        if (options.sum_gate_mode == SumGateMode::DISABLED) {
+            std::cout << "Sum gate disabled: every armed PPS candidate is accepted\n";
+        } else if (options.sum_gate_mode == SumGateMode::VETO) {
+            std::cout << "Sum veto: require max(ADC_D + ADC_C + ADC_B + ADC_A) < "
+                      << options.sum_threshold << "\n";
+        } else {
+            std::cout << "Sum trigger: require max(ADC_D + ADC_C + ADC_B + ADC_A) >= "
+                      << options.sum_threshold << "\n";
+        }
+        std::cout << "BDT score is printed but does not select events\n";
 
         std::vector<int16_t> samples;
         uint64_t sample_rate_hz = sample_rate_header_value(options.sample_rate_hz);
@@ -523,6 +579,8 @@ int main(int argc, char** argv)
             run.set_arg(0, buffer);
             run.set_arg(6, static_cast<unsigned int>(DATA_SIZE));
             run.set_arg(7, static_cast<unsigned int>(PACKED_WORDS_PER_TRANSFER));
+            run.set_arg(8, static_cast<unsigned int>(options.sum_gate_mode));
+            run.set_arg(9, options.sum_threshold);
             run.start();
             auto state = run.wait();
             if (state != ERT_CMD_STATE_COMPLETED) {
