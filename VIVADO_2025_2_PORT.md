@@ -448,20 +448,27 @@ sudo mount /dev/sda1 /mnt/rfsoc4x2-boot
 sudo install -m 0755 \
   build/vitis_dummy_kernel_2025_2/test_adc \
   /mnt/rfsoc4x2-boot/test_adc
+sudo install -m 0644 \
+  src/vitis_adc_platform/xrfclk-2.0.tar.gz \
+  src/vitis_adc_platform/set_ref_clocks.py \
+  src/vitis_adc_platform/gpio_chardev.py \
+  /mnt/rfsoc4x2-boot/
 sync
 sudo umount /mnt/rfsoc4x2-boot
 ```
 
 The verified rootfs contains `python3-core` and `python3-setuptools`, but not
 `python3-pip`. The checked-in `xrfclk` archive is pure Python and can be used
-directly without installing it. After the first board boot:
+directly without installing it. The 2025.2 clock script uses the Linux GPIO
+character-device API because the deprecated `/sys/class/gpio/export` interface
+is not enabled. After the first board boot:
 
 ```bash
 BOOT_DIR=$(findmnt -rn -S /dev/mmcblk0p1 -o TARGET)
 test -n "$BOOT_DIR"
 cd /home/petalinux
 tar -xzf "$BOOT_DIR/xrfclk-2.0.tar.gz"
-cp "$BOOT_DIR/set_ref_clocks.py" .
+cp "$BOOT_DIR/set_ref_clocks.py" "$BOOT_DIR/gpio_chardev.py" .
 test -d /sys/bus/spi/drivers/spidev || sudo modprobe spidev
 sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
   python3 /home/petalinux/set_ref_clocks.py

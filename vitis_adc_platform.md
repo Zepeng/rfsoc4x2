@@ -343,10 +343,13 @@ If you previously built the single-stream version or a platform without RFDC clo
      ```
 
 4. Configure and turn on the reference clock chips (LMK04828 and LMX2594) via SPI:
-   - From the host, copy this python package file [`xrfclk-2.0.tar.gz`](src/vitis_adc_platform/xrfclk-2.0.tar.gz) (I hacked out from the [RFSoC-PYNQ distribution](https://github.com/Xilinx/RFSoC-PYNQ/tree/master/boards/RFSoC4x2)) and the clock setup script [`set_ref_clocks.py`](src/vitis_adc_platform/set_ref_clocks.py) to the RFSoC board. Replace `192.168.2.2` with the board IP address:
+   - From the host, copy this python package file [`xrfclk-2.0.tar.gz`](src/vitis_adc_platform/xrfclk-2.0.tar.gz) (I hacked out from the [RFSoC-PYNQ distribution](https://github.com/Xilinx/RFSoC-PYNQ/tree/master/boards/RFSoC4x2)), the clock setup script [`set_ref_clocks.py`](src/vitis_adc_platform/set_ref_clocks.py), and its [`gpio_chardev.py`](src/vitis_adc_platform/gpio_chardev.py) helper to the RFSoC board. Replace `192.168.2.2` with the board IP address:
      ```shell
-     scp src/vitis_adc_platform/xrfclk-2.0.tar.gz root@192.168.2.2:/home/root/
-     scp src/vitis_adc_platform/set_ref_clocks.py root@192.168.2.2:/home/root/
+     scp \
+       src/vitis_adc_platform/xrfclk-2.0.tar.gz \
+       src/vitis_adc_platform/set_ref_clocks.py \
+       src/vitis_adc_platform/gpio_chardev.py \
+       petalinux@192.168.2.2:/home/petalinux/
      ```
    - On the board, check that the three SPI nodes from the device tree are present:
      ```shell
@@ -357,10 +360,11 @@ If you previously built the single-stream version or a platform without RFDC clo
    - Unpack the pure-Python package and run the script on the board. This does
      not require `python3-pip`:
      ```shell
-     cd /home/root
+     cd /home/petalinux
      tar -xzf ./xrfclk-2.0.tar.gz
-     PYTHONPATH=/home/root/xrfclk-2.0 python3 ./set_ref_clocks.py
-     ls /dev/spidev*
+     sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
+       python3 /home/petalinux/set_ref_clocks.py
+     sudo ls /dev/spidev*
      ```
      The script should create `/dev/spidev0.0`, `/dev/spidev0.1`, and `/dev/spidev0.2` and program the LMK04828 and LMX2594 chips for the ADC reference clocks.
    - If `/sys/bus/spi/devices` has `spi0.0`, `spi0.1`, and `spi0.2`, but `/dev/spidev*` is still missing, bind the devices manually and rerun the script:
@@ -374,8 +378,8 @@ If you previously built the single-stream version or a platform without RFDC clo
      done
 
      ls /dev/spidev*
-     PYTHONPATH=/home/root/xrfclk-2.0 \
-       python3 /home/root/set_ref_clocks.py
+     sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
+       python3 /home/petalinux/set_ref_clocks.py
      ```
 5. Run the `test_adc` app to grab samples from the ADC:
    ```shell
@@ -461,8 +465,8 @@ Complete this test after the PPS-enabled Vitis build. The purpose is to verify s
 
    ```shell
    modprobe spidev
-   PYTHONPATH=/home/root/xrfclk-2.0 \
-     python3 /home/root/set_ref_clocks.py
+   sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
+     python3 /home/petalinux/set_ref_clocks.py
    ls /dev/spidev*
    ```
 
