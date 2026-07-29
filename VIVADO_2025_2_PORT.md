@@ -238,6 +238,39 @@ zynqmp_fsbl.elf
 Also retain `Image`, `rootfs.ext4`, `sdk.sh`, and the installed SDK directory
 for application compilation and packaging.
 
+For a two-partition SD card, write the generated `rootfs.ext4` directly to
+partition 2. Do not copy this image file-by-file with `rsync`; the first 2025.2
+test produced zero-length copies of the systemd executable and AArch64 dynamic
+loader even though the source files were valid. Resolve and inspect the exact
+removable target before writing it:
+
+```bash
+SD=/dev/sda
+ROOTFS_IMAGE="$PWD/images/linux/rootfs.ext4"
+
+lsblk -p -o NAME,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINTS,MODEL "$SD"
+sudo umount "${SD}1" "${SD}2" 2>/dev/null || true
+
+source_bytes=$(stat -c '%s' "$ROOTFS_IMAGE")
+partition_bytes=$(sudo blockdev --getsize64 "${SD}2")
+test "$source_bytes" -le "$partition_bytes"
+
+sudo dd \
+  if="$ROOTFS_IMAGE" \
+  of="${SD}2" \
+  bs=16M iflag=fullblock \
+  conv=fsync status=progress
+sync
+
+sudo cmp -n "$source_bytes" "$ROOTFS_IMAGE" "${SD}2"
+```
+
+The final `cmp` must return success with no differences. The 2025.2 image uses
+the ext4 orphan-file feature, which `e2fsck` 1.46.5 reports as unsupported
+`FEATURE_C12`. Do not run that older `e2fsck` or `resize2fs` on the generated
+filesystem. Leaving the additional partition capacity unused is acceptable
+for initial board bring-up.
+
 Decompile the final DTB and check the board-level nodes before creating the
 Vitis platform:
 
