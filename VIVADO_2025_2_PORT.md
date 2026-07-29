@@ -29,9 +29,13 @@ device-tree nodes. Vitis 2025.2 has also built and exported the
 `RFDC_DATA_AXIS`, `RFDC_TRIG_AXIS`, `RFDC_ADC_B_AXIS`,
 `RFDC_ADC_A_AXIS`, and `PPS_TRIG_AXIS`.
 
-The next gate is HLS synthesis and packaging of the dummy kernel, followed by
-Vitis linking and implementation against the exported platform. System
-packaging and board validation remain pending.
+The dummy kernel has now completed Vitis 2025.2 HLS synthesis and XO
+packaging. The 13.02 ns target produced a 9.505 ns top-level estimate;
+`capture_candidate` achieved `II=1` with a 5.682 ns estimate, and
+`write_triggered_waveform` achieved `II=1` with a 9.505 ns estimate and the
+expected 2052-cycle latency. The next gate is Vitis hardware linking and
+implementation against the exported platform. System packaging and board
+validation remain pending.
 
 ## Confirmed 2025.2 Migration Findings
 
@@ -326,6 +330,14 @@ the `.xo` in `build/vitis_dummy_kernel_2025_2`.
 Review the generated HLS synthesis report before linking. In particular,
 confirm a 76.8 MHz target and `II=1` for the acquisition and waveform-write
 pipelines. Then run the hardware link:
+
+The first Vitis 2025.2 HLS run passed these checks: target 13.02 ns,
+top-level estimate 9.505 ns, `capture_candidate` estimate 5.682 ns with
+achieved `II=1`, and `write_triggered_waveform` estimate 9.505 ns with
+achieved `II=1`. Its 2052-cycle, 26.719 us writeout latency is consistent with
+the 76.8 MHz target. The unknown latency of the outer
+`capture_external_trigger` loop is intentional because it waits for an
+external PPS edge and may retry a rejected candidate.
 
 ```bash
 v++ -l -t hw \
