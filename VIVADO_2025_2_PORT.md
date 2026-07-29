@@ -252,9 +252,11 @@ is incomplete or belongs to a different installation; inspect all candidates
 with `type -a vitis` and source the settings script from the matching full
 Vitis 2025.2 installation.
 
-The script intentionally stops with an API-specific error if the installed
-2025.2 domain object no longer supports `add_boot_dir()` or `add_bif()`.
-Resolve such an error against the installed API reference:
+The script uses the Vitis 2025.2 Linux-domain resource API:
+`domain.generate_bif()` followed by
+`domain.set_boot_dir(path=<PetaLinux images/linux>)`. The older
+`add_boot_dir()` and `add_bif()` methods are not available in Vitis 2025.2.
+Resolve any further API-specific error against the installed API reference:
 
 ```text
 <VITIS_INSTALL>/cli/api_docs/build/html/vitis.html

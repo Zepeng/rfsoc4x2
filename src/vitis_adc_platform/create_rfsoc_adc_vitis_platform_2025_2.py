@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 from pathlib import Path
 
 PLATFORM_NAME = "rfsoc_adc_vitis_platform_2025_2"
@@ -102,7 +101,7 @@ def require_file(path: Path) -> Path:
     return resolved
 
 
-def copy_boot_files(linux_image_dir: Path, boot_dir: Path) -> None:
+def require_boot_files(linux_image_dir: Path) -> None:
     boot_files = (
         "bl31.elf",
         "pmufw.elf",
@@ -111,34 +110,8 @@ def copy_boot_files(linux_image_dir: Path, boot_dir: Path) -> None:
         "zynqmp_fsbl.elf",
         "boot.scr",
     )
-    boot_dir.mkdir(parents=True, exist_ok=True)
     for filename in boot_files:
-        shutil.copy2(require_file(linux_image_dir / filename), boot_dir / filename)
-
-
-def write_linux_bif(boot_dir: Path) -> Path:
-    bif = boot_dir / "linux.bif"
-    lines = (
-        "/* linux */",
-        "the_ROM_image:",
-        "{",
-        "  [fsbl_config] a53_x64",
-        f"  [bootloader] <{boot_dir / 'zynqmp_fsbl.elf'}>",
-        f"  [pmufw_image] <{boot_dir / 'pmufw.elf'}>",
-        "  [destination_device=pl] <bitstream>",
-        (
-            "  [destination_cpu=a53-0, exception_level=el-3, trustzone] "
-            f"<{boot_dir / 'bl31.elf'}>"
-        ),
-        f"  [load=0x00100000] <{boot_dir / 'system.dtb'}>",
-        (
-            "  [destination_cpu=a53-0, exception_level=el-2] "
-            f"<{boot_dir / 'u-boot.elf'}>"
-        ),
-        "}",
-    )
-    bif.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return bif
+        require_file(linux_image_dir / filename)
 
 
 def require_method(obj: object, method_name: str):
@@ -163,6 +136,7 @@ def main() -> None:
         raise NotADirectoryError(
             f"Linux image directory does not exist: {linux_image_dir}"
         )
+    require_boot_files(linux_image_dir)
 
     workspace.mkdir(parents=True, exist_ok=True)
     component_dir = workspace / args.platform_name
@@ -191,12 +165,13 @@ def main() -> None:
             domain = get_domain(name=args.domain_name)
         except TypeError:
             domain = get_domain(args.domain_name)
-        boot_dir = component_dir / "resources" / args.domain_name / "boot"
-        copy_boot_files(linux_image_dir, boot_dir)
-        bif = write_linux_bif(boot_dir)
 
-        require_method(domain, "add_boot_dir")(boot_dir=str(boot_dir))
-        require_method(domain, "add_bif")(path=str(bif))
+        # Vitis 2025.2 replaced Domain.add_boot_dir()/add_bif() with the
+        # generate_bif()/set_boot_dir() flow. Point set_boot_dir() at the
+        # PetaLinux images directory; Vitis copies the required pre-built
+        # components into the platform resources during the build.
+        require_method(domain, "generate_bif")()
+        require_method(domain, "set_boot_dir")(path=str(linux_image_dir))
 
         status = platform.build()
         print(f"Platform build status: {status}")
