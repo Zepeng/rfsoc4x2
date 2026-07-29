@@ -184,6 +184,12 @@ Ensure `CONFIG_rfdc` is present in
 `project-spec/meta-user/conf/user-rootfsconfig`. Run
 `petalinux-config -c kernel` and enable the user-mode SPI device driver.
 
+The RFSoC4x2 DP83867 PHY must be a child of the GEM1 `mdio` node. The
+versioned `system-user.dtsi` supplies `#address-cells = <1>` and
+`#size-cells = <0>` on that node so the PHY address `reg = <0xf>` has the
+correct format. Do not move the PHY directly under `&gem1`; doing so makes it
+inherit the GEM register format and produces `dtc` `reg_format` warnings.
+
 Build the image and install its SDK sysroot:
 
 ```bash
@@ -205,6 +211,18 @@ zynqmp_fsbl.elf
 
 Also retain `Image`, `rootfs.ext4`, `sdk.sh`, and the installed SDK directory
 for application compilation and packaging.
+
+Decompile the final DTB and check the board-level nodes before creating the
+Vitis platform:
+
+```bash
+dtc -I dtb -O dts images/linux/system.dtb -o /tmp/rfsoc4x2-final.dts
+grep -nE \
+  'bootargs|spi@ff040000|lmk@0|lmxdac@1|lmxadc@2|ethernet@ff0c0000|mdio|ethernet-phy@f' \
+  /tmp/rfsoc4x2-final.dts
+```
+
+The decompile must not report a `reg_format` warning for the Ethernet PHY.
 
 ## Phase 4: Vitis Platform
 
