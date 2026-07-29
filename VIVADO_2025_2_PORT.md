@@ -12,13 +12,22 @@ changes, tool API changes, and Linux/XRT changes can be diagnosed separately.
   names, uses an explicit RealDigital board-file location, validates the block
   design, and can export an extensible XSA.
 - `create_rfsoc_adc_vitis_platform_2025_2.py` uses the documented 2025.2
-  `hw_design` platform API and targets `psu_cortexa53_0`.
+  `hw_design`, `generate_bif`, and `set_boot_dir` platform APIs and targets
+  `psu_cortexa53_0`.
 - Hardware emulation is deferred. It did not work for `xczu48dr` in the
   existing 2023.2.1 flow.
 
 The hardware migration driver has now recreated and validated the block design
-and exported a pre-synthesis extensible XSA in Vivado 2025.2. Synthesis,
-implementation, PetaLinux, and the real Vitis platform build remain pending.
+and exported a pre-synthesis extensible XSA in Vivado 2025.2. A fresh
+PetaLinux 2025.2 project has built successfully with XRT, ZOCL, the installed
+SDK sysroot, user-mode SPI, and the corrected RFSoC4x2 SPI, SD, and Ethernet
+device-tree nodes. Vitis 2025.2 has also built and exported the
+`rfsoc_adc_vitis_platform_2025_2` platform with FSBL, PMU firmware, and Linux
+`xrt` domains; the reported platform build status was zero.
+
+The next gate is independent `platforminfo` verification of clock IDs 3 and 4
+and all five stream tags. Synthesis, implementation, Vitis kernel linking,
+packaging, and board validation remain pending.
 
 ## Confirmed 2025.2 Migration Findings
 
@@ -28,6 +37,9 @@ implementation, PetaLinux, and the real Vitis platform build remain pending.
 - The 2023.2.1 project export suppresses all status, informational, warning,
   and critical-warning messages. The migration driver omits those session
   filters so IP, DRC, CDC, and implementation diagnostics remain visible.
+- Vitis 2025.2 `Domain` objects no longer provide the 2023.2
+  `add_boot_dir()` and `add_bif()` methods. The working flow calls
+  `generate_bif()` and `set_boot_dir(path=<PetaLinux images/linux>)`.
 
 ## Required Build Host
 
