@@ -337,6 +337,7 @@ Build the dummy-BDT kernel first. Preserve:
 The repository provides separate Vitis 2025.2 HLS and link configurations:
 
 - `src/vitis_adc_platform/dummy_kernel_hls_2025_2.cfg`
+- `src/vitis_adc_platform/dummy_kernel_hls_bdt_2025_2.cfg`
 - `src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg`
 
 Run the flow from the repository root after sourcing the Vitis 2025.2
@@ -391,6 +392,66 @@ v++ -l -t hw \
 
 test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
 ```
+
+### Real BDT build
+
+After the dummy-score kernel and both runtime sum modes have passed, build the
+real Conifer BDT variant with the dedicated HLS configuration. It preserves
+the same kernel name and interfaces, but defines `USE_CONIFER_BDT` and writes
+distinct `.xo` and `.xclbin` names to prevent a fallback artifact from being
+mistaken for the real model.
+
+The generated model is intentionally external to this repository. Verify it
+before starting HLS:
+
+```bash
+for f in BDT.h BDT.cpp parameters.h; do
+  test -s "csi_bdt_prj_kv260/firmware/$f" ||
+    echo "MISSING: csi_bdt_prj_kv260/firmware/$f"
+done
+```
+
+No output means the required model firmware exists. Then synthesize and link:
+
+```bash
+v++ -c --mode hls \
+  --platform "$RFSOC4X2_XPFM" \
+  --freqhz=76800000 \
+  --config src/vitis_adc_platform/dummy_kernel_hls_bdt_2025_2.cfg \
+  --work_dir build/vitis_dummy_kernel_2025_2/hls_bdt
+
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo
+
+v++ -l -t hw \
+  --platform "$RFSOC4X2_XPFM" \
+  --config src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg \
+  --temp_dir build/vitis_dummy_kernel_2025_2/link_bdt \
+  --log_dir build/vitis_dummy_kernel_2025_2/logs_bdt \
+  --save-temps \
+  -o build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xclbin \
+  build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo
+
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xclbin
+```
+
+The checked-in BDT wrapper gathers the 250 selected samples while the captured
+waveform is written, then calls the generated Conifer
+`bdt.decision_function()`. Event acceptance remains controlled only by PPS and
+the runtime sum mode; the BDT score is diagnostic at this stage.
+
+This build uses identity preprocessing unless
+`src/vitis_adc_platform/bdt_norm_config.h` exists and
+`-DBDT_USE_NORM_CONFIG=1` is added to `syn.cflags`. Do not enable that define
+without the normalization constants used to train the deployed model.
+
+Package the BDT-linked image and deploy its newly packaged `BOOT.BIN` together
+with `dummy_kernel_bdt.xclbin`. On the board, the host must print:
+
+```text
+Frame 0 BDT score: <score> (raw <raw>)
+```
+
+`dummy BDT score` means the board is still running a fallback-built xclbin.
 
 The kernel interface has two runtime sum-gate arguments after `output_words`.
 The matching host supplies them as XRT arguments 8 and 9:
@@ -494,10 +555,9 @@ sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
 sudo ls /dev/spidev*
 ```
 
-Only enable `USE_CONIFER_BDT` after the dummy build works. The real BDT depends
-on ignored, externally generated files in `csi_bdt_prj_kv260/firmware`; pin or
-archive `BDT.h`, `BDT.cpp`, and `parameters.h` before calling the port
-reproducible.
+The real BDT depends on ignored, externally generated files in
+`csi_bdt_prj_kv260/firmware`; pin or archive `BDT.h`, `BDT.cpp`, and
+`parameters.h` before calling the port reproducible.
 
 Board acceptance tests are the existing reference-clock, PPS/ILA, four-channel
 continuity, cross-tile phase, power-cycle, XRT, and BDT timing checks in

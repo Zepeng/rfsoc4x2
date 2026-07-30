@@ -173,6 +173,11 @@ For the real BDT build, add these to the HLS kernel build:
 - Compile define: `USE_CONIFER_BDT`
 - Compile define: `BDT_USE_NORM_CONFIG` only when `bdt_norm_config.h` exists
 
+For the Vitis 2025.2 command-line flow, these settings are already captured in
+`src/vitis_adc_platform/dummy_kernel_hls_bdt_2025_2.cfg`. It produces
+`build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo`, leaving the tested
+dummy-score `.xo` untouched.
+
 Example V++ compile options:
 
 ```text
