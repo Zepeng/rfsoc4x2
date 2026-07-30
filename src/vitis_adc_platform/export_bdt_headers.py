@@ -175,8 +175,8 @@ def main() -> int:
     parser.add_argument(
         "--capture-words",
         type=int,
-        default=2048,
-        help="Trigger-aligned capture length in AXIS words. Default: 2048",
+        default=8192,
+        help="Trigger-aligned capture length in two-sample AXIS words. Default: 8192",
     )
     parser.add_argument(
         "--source-bins",

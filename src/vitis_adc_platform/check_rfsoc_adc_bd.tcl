@@ -254,14 +254,14 @@ foreach {name value expected} [list \
   CONFIG.ADC_Decimation_Mode02 $decim02 8 \
   CONFIG.ADC_Decimation_Mode20 $decim20 8 \
   CONFIG.ADC_Decimation_Mode22 $decim22 8 \
-  CONFIG.ADC0_Outclk_Freq $outclk0 76.800 \
-  CONFIG.ADC2_Outclk_Freq $outclk2 76.800 \
+  CONFIG.ADC0_Outclk_Freq $outclk0 307.200 \
+  CONFIG.ADC2_Outclk_Freq $outclk2 307.200 \
   CONFIG.ADC0_Sampling_Rate $sampling_rate0 4.9152 \
   CONFIG.ADC2_Sampling_Rate $sampling_rate2 4.9152 \
-  CONFIG.ADC_Data_Width00 $width00 8 \
-  CONFIG.ADC_Data_Width02 $width02 8 \
-  CONFIG.ADC_Data_Width20 $width20 8 \
-  CONFIG.ADC_Data_Width22 $width22 8 \
+  CONFIG.ADC_Data_Width00 $width00 2 \
+  CONFIG.ADC_Data_Width02 $width02 2 \
+  CONFIG.ADC_Data_Width20 $width20 2 \
+  CONFIG.ADC_Data_Width22 $width22 2 \
   CONFIG.ADC_Data_Type00 $type00 0 \
   CONFIG.ADC_Data_Type02 $type02 0 \
   CONFIG.ADC_Data_Type20 $type20 0 \
@@ -386,10 +386,10 @@ if {$pps_ila_probe4_pins != 0} {
 foreach {name value expected} [list \
   {clk_adc0 PFM id} $pfm_clk_adc0_id 3 \
   {clk_adc0 PFM status} $pfm_clk_adc0_status fixed \
-  {clk_adc0 PFM freq_hz} $pfm_clk_adc0_freq 76800000 \
+  {clk_adc0 PFM freq_hz} $pfm_clk_adc0_freq 307200000 \
   {clk_adc2 PFM id} $pfm_clk_adc2_id 4 \
   {clk_adc2 PFM status} $pfm_clk_adc2_status fixed \
-  {clk_adc2 PFM freq_hz} $pfm_clk_adc2_freq 76800000 \
+  {clk_adc2 PFM freq_hz} $pfm_clk_adc2_freq 307200000 \
 ] {
   if {$value ne $expected} {
     puts "ERROR: Expected $name to be $expected"

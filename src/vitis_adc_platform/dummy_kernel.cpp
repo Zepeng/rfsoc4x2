@@ -23,11 +23,13 @@
 #include "ap_axi_sdata.h"
 #include "hls_stream.h"
 
-#define STREAM_WIDTH 128
-#define CHANNEL_COUNT 4
-#define PACKED_WIDTH (CHANNEL_COUNT * STREAM_WIDTH)
-#define SAMPLES_PER_WORD (STREAM_WIDTH / 16)
-#define CAPTURE_WORDS 2048
+#include "adc_stream_config.h"
+
+#define STREAM_WIDTH RFDC_STREAM_WIDTH
+#define CHANNEL_COUNT RFDC_CHANNEL_COUNT
+#define PACKED_WIDTH RFDC_PACKED_WIDTH
+#define SAMPLES_PER_WORD RFDC_SAMPLES_PER_WORD
+#define CAPTURE_WORDS RFDC_CAPTURE_WORDS
 #define PRETRIGGER_WORDS (CAPTURE_WORDS / 5)
 #define POSTTRIGGER_WORDS (CAPTURE_WORDS - PRETRIGGER_WORDS - 1)
 #define SUM_GATE_DISABLED 0
@@ -123,7 +125,8 @@ sum_word_lanes:
     }
 
     word_over_threshold = over_threshold;
-    word_average = (sum_sample_t)(accumulator >> 3);
+    word_average =
+        (sum_sample_t)(accumulator >> RFDC_WORD_AVERAGE_SHIFT);
 }
 
 static void advance_index(unsigned int& index, unsigned int limit)
@@ -194,6 +197,12 @@ static_assert(BDT_SOURCE_BINS < CAPTURE_WORDS,
               "BDT downsampling requires fewer output bins than capture words");
 static_assert(BDT_FEATURE_COUNT <= BDT_SOURCE_BINS,
               "BDT feature count must fit inside the downsampled waveform");
+static_assert(STREAM_WIDTH == SAMPLES_PER_WORD * 16,
+              "Each RFDC stream lane must contain one signed 16-bit sample");
+static_assert((1U << RFDC_WORD_AVERAGE_SHIFT) == SAMPLES_PER_WORD,
+              "Word-average shift must match the samples per RFDC word");
+static_assert(CAPTURE_WORDS * SAMPLES_PER_WORD == RFDC_SAMPLES_PER_FRAME,
+              "Capture words must preserve the configured sample count");
 static_assert(PRETRIGGER_WORDS + 1 + POSTTRIGGER_WORDS == CAPTURE_WORDS,
               "Accepted trigger window must initialize every capture word");
 #ifdef USE_CONIFER_BDT

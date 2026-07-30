@@ -80,8 +80,8 @@ def parse_args():
     parser.add_argument(
         "--lanes-per-word",
         type=int,
-        default=8,
-        help="Number of 16-bit samples in each RFDC AXIS word. Default: 8",
+        default=2,
+        help="Number of 16-bit samples in each RFDC AXIS word. Default: 2",
     )
     parser.add_argument(
         "--word-lane",

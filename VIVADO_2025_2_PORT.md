@@ -24,8 +24,10 @@ SDK sysroot, user-mode SPI, and the corrected RFSoC4x2 SPI, SD, and Ethernet
 device-tree nodes. Vitis 2025.2 has also built and exported the
 `rfsoc_adc_vitis_platform_2025_2` platform with FSBL, PMU firmware, and Linux
 `xrt` domains; the reported platform build status was zero. Independent
-`platforminfo` inspection confirmed `clk_adc0` as clock ID 3 at 76.8 MHz,
-`clk_adc2` as clock ID 4 at 76.8 MHz, and all five platform stream tags:
+The previously verified eight-sample platform reported `clk_adc0` as clock ID
+3 at 76.8 MHz and `clk_adc2` as clock ID 4 at 76.8 MHz. The current
+two-sample-word evaluation changes both exported RFDC clocks to 307.2 MHz while
+retaining their IDs and all five platform stream tags:
 `RFDC_DATA_AXIS`, `RFDC_TRIG_AXIS`, `RFDC_ADC_B_AXIS`,
 `RFDC_ADC_A_AXIS`, and `PPS_TRIG_AXIS`.
 
@@ -80,8 +82,8 @@ export RFSOC4X2_BOARD_REPO=/absolute/path/to/RFSoC4x2-BSP
 vivado -mode batch \
   -source src/vitis_adc_platform/rfsoc_adc_hardware_2025_2.tcl \
   -tclargs \
-    --output_dir "$PWD/build/vivado_2025_2" \
-    --export_xsa "$PWD/build/rfsoc_adc_hardware_2025_2.xsa"
+    --output_dir "$PWD/build/vivado_2025_2_word2" \
+    --export_xsa "$PWD/build/rfsoc_adc_hardware_2025_2_word2.xsa"
 ```
 
 The migration driver must:
@@ -89,12 +91,12 @@ The migration driver must:
 1. Confirm the active tool version begins with `2025.2`.
 2. Find `rfsoc4x2/1.0/board.xml` in the BSP `board_files` directory.
 3. Recreate and validate `system.bd`.
-4. Preserve RFDC v2.6 settings:
+4. Configure RFDC v2.6 for the two-sample-word evaluation:
    - ADC tiles 0 and 2 enabled.
    - 4.9152 GS/s converter sampling.
    - Decimation 8.
-   - Four 128-bit real AXI streams.
-5. Preserve the common 76.8 MHz `clk_adc0` connection for both RFDC AXI stream
+   - Four 32-bit real AXI streams, each carrying two signed 16-bit samples.
+5. Use the common 307.2 MHz `clk_adc0` connection for both RFDC AXI stream
    clock inputs, the PPS adapter, and the PPS ILA.
 6. Preserve platform clock IDs 1 through 4 and all five AXI stream tags.
 
@@ -128,7 +130,7 @@ The checker needs `RFSOC4X2_BOARD_REPO` in its environment.
 Before continuing, inspect:
 
 ```text
-build/vivado_2025_2/rfsoc_adc_hardware_2025_2_ip_status.rpt
+build/vivado_2025_2_word2/rfsoc_adc_hardware_2025_2_ip_status.rpt
 ```
 
 Do not automatically accept an RFDC configuration change. Compare every
@@ -148,10 +150,10 @@ To validate the base design independently after Phase 1:
 vivado -mode batch \
   -source src/vitis_adc_platform/rfsoc_adc_hardware_2025_2.tcl \
   -tclargs \
-    --output_dir "$PWD/build/vivado_2025_2_impl" \
+    --output_dir "$PWD/build/vivado_2025_2_word2_impl" \
     --build \
     --jobs 8 \
-    --export_xsa "$PWD/build/rfsoc_adc_hardware_2025_2.xsa"
+    --export_xsa "$PWD/build/rfsoc_adc_hardware_2025_2_word2.xsa"
 ```
 
 Archive these reports before changing constraints or IP settings:
@@ -164,7 +166,7 @@ Archive these reports before changing constraints or IP settings:
 
 The first implementation acceptance criteria are zero errors, no new critical
 warnings that affect clocks/resets/platform interfaces, and timing closure on
-all generated clocks, including the 76.8 MHz RFDC-connected kernel clock.
+all generated clocks, including the 307.2 MHz RFDC-connected kernel clock.
 
 ## Phase 3: PetaLinux 2025.2
 
@@ -173,10 +175,17 @@ Create a fresh PetaLinux 2025.2 project from the new XSA. Do not upgrade the
 device-tree configuration deliberately, then record the actual 2025.2 sysroot
 path instead of assuming the old `cortexa72-cortexa53-xilinx-linux` name.
 
+For the two-sample-word experiment, the already verified PetaLinux 2025.2
+images may be reused: RFDC stream width and PL clock changes do not alter the
+PS addresses or the board device tree. A fresh XSA, Vitis platform, linked
+xclbin, packaged `BOOT.BIN`, and matching host executable are still required.
+Only repeat the PetaLinux build if the hardware import changes generated
+device-tree content or the existing Linux images are unavailable.
+
 Source PetaLinux 2025.2, then run these commands from the repository root:
 
 ```bash
-export RFSOC4X2_XSA="$PWD/build/rfsoc_adc_hardware_2025_2.xsa"
+export RFSOC4X2_XSA="$PWD/build/rfsoc_adc_hardware_2025_2_word2.xsa"
 export RFSOC4X2_REPOSITORY="$PWD"
 export RFSOC4X2_PETALINUX_PROJECT="$PWD/build/rfsoc-linux-2025_2"
 
@@ -288,11 +297,12 @@ The decompile must not report a `reg_format` warning for the Ethernet PHY.
 Run the new platform script from the Vitis 2025.2 environment:
 
 ```bash
-export RFSOC4X2_VITIS_WORKSPACE=/absolute/path/to/workspace_2025_2
-export RFSOC4X2_XSA="$PWD/build/rfsoc_adc_hardware_2025_2.xsa"
+export RFSOC4X2_VITIS_WORKSPACE=/absolute/path/to/workspace_2025_2_word2
+export RFSOC4X2_XSA="$PWD/build/rfsoc_adc_hardware_2025_2_word2.xsa"
 export RFSOC4X2_LINUX_IMAGE_DIR=/absolute/path/to/rfsoc-linux/images/linux
 
-vitis -s src/vitis_adc_platform/create_rfsoc_adc_vitis_platform_2025_2.py
+vitis -s src/vitis_adc_platform/create_rfsoc_adc_vitis_platform_2025_2.py \
+  --platform-name rfsoc_adc_vitis_platform_2025_2_word2
 ```
 
 Do not invoke this file with `python` or `python3`. Sourcing the Vitis settings
@@ -328,11 +338,12 @@ the five stream tags before creating an application.
 
 Build the dummy-BDT kernel first. Preserve:
 
-- Kernel clock: 76.8 MHz.
+- Kernel clock: 307.2 MHz.
 - `II=1` acquisition and writeout loops.
 - Four RFDC stream connections plus `PPS_TRIG_AXIS`.
-- One 512-bit `gmem0` output buffer.
-- 2048 capture words plus one metadata word.
+- One 128-bit `gmem0` output buffer.
+- 8192 capture words plus one metadata word.
+- 16,384 samples/channel and the 614.4 MS/s post-decimation sample rate.
 
 The repository provides separate Vitis 2025.2 HLS and link configurations:
 
@@ -346,21 +357,21 @@ directory:
 
 ```bash
 export RFSOC4X2_XPFM=\
-/absolute/path/to/rfsoc_adc_vitis_platform_2025_2.xpfm
+/absolute/path/to/rfsoc_adc_vitis_platform_2025_2_word2.xpfm
 
 mkdir -p build/vitis_dummy_kernel_2025_2
 
 v++ -c --mode hls \
   --platform "$RFSOC4X2_XPFM" \
-  --freqhz=76800000 \
+  --freqhz=307200000 \
   --config src/vitis_adc_platform/dummy_kernel_hls_2025_2.cfg \
-  --work_dir build/vitis_dummy_kernel_2025_2/hls
+  --work_dir build/vitis_dummy_kernel_2025_2/hls_word2
 
-test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xo
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_word2.xo
 ```
 
 Vitis 2025.2 HLS mode uses `freqhz` when an HLS component targets a platform.
-Do not copy the legacy `[hls] clock=76800000:dummy_kernel` setting into this
+Do not copy the legacy `[hls] clock=307200000:dummy_kernel` setting into this
 configuration. The HLS configuration packages the `.xo` as part of C
 synthesis. Vitis 2025.2 resolves `syn.file` from the parent of `--work_dir`,
 but resolves `package.output.file` from the HLS configuration file's
@@ -368,10 +379,13 @@ directory. The checked-in relative paths account for these two bases and place
 the `.xo` in `build/vitis_dummy_kernel_2025_2`.
 
 Review the generated HLS synthesis report before linking. In particular,
-confirm a 76.8 MHz target and `II=1` for the acquisition and waveform-write
-pipelines. Then run the hardware link:
+confirm a 307.2 MHz target and `II=1` for the acquisition and waveform-write
+pipelines. This is a substantially tighter timing target than the verified
+eight-sample build; do not continue to linking if `capture_candidate` fails
+`II=1`. Then run the hardware link:
 
-The first Vitis 2025.2 HLS run passed these checks: target 13.02 ns,
+For reference, the previous eight-sample Vitis 2025.2 HLS run passed these
+checks: target 13.02 ns,
 top-level estimate 9.505 ns, `capture_candidate` estimate 5.682 ns with
 achieved `II=1`, and `write_triggered_waveform` estimate 9.505 ns with
 achieved `II=1`. Its 2052-cycle, 26.719 us writeout latency is consistent with
@@ -384,13 +398,13 @@ sum gate is enabled.
 v++ -l -t hw \
   --platform "$RFSOC4X2_XPFM" \
   --config src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg \
-  --temp_dir build/vitis_dummy_kernel_2025_2/link \
-  --log_dir build/vitis_dummy_kernel_2025_2/logs \
+  --temp_dir build/vitis_dummy_kernel_2025_2/link_word2 \
+  --log_dir build/vitis_dummy_kernel_2025_2/logs_word2 \
   --save-temps \
-  -o build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin \
-  build/vitis_dummy_kernel_2025_2/dummy_kernel.xo
+  -o build/vitis_dummy_kernel_2025_2/dummy_kernel_word2.xclbin \
+  build/vitis_dummy_kernel_2025_2/dummy_kernel_word2.xo
 
-test -s build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_word2.xclbin
 ```
 
 ### Real BDT build
@@ -416,25 +430,25 @@ No output means the required model firmware exists. Then synthesize and link:
 ```bash
 v++ -c --mode hls \
   --platform "$RFSOC4X2_XPFM" \
-  --freqhz=76800000 \
+  --freqhz=307200000 \
   --config src/vitis_adc_platform/dummy_kernel_hls_bdt_2025_2.cfg \
-  --work_dir build/vitis_dummy_kernel_2025_2/hls_bdt
+  --work_dir build/vitis_dummy_kernel_2025_2/hls_bdt_word2
 
-test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt_word2.xo
 
 v++ -l -t hw \
   --platform "$RFSOC4X2_XPFM" \
   --config src/vitis_adc_platform/dummy_kernel_link_2025_2.cfg \
-  --temp_dir build/vitis_dummy_kernel_2025_2/link_bdt \
-  --log_dir build/vitis_dummy_kernel_2025_2/logs_bdt \
+  --temp_dir build/vitis_dummy_kernel_2025_2/link_bdt_word2 \
+  --log_dir build/vitis_dummy_kernel_2025_2/logs_bdt_word2 \
   --save-temps \
-  -o build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xclbin \
-  build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo
+  -o build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt_word2.xclbin \
+  build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt_word2.xo
 
-test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xclbin
+test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt_word2.xclbin
 ```
 
-The checked-in kernel uses a generated deterministic 2048-to-1250 source-word
+The checked-in kernel uses a generated deterministic 8192-to-1250 source-word
 map anchored to the accepted, trigger-aligned capture. It reads two selected
 features per cycle from the dual-port average BRAM and calls the generated
 Conifer `bdt.decision_function()` before starting waveform DDR writeout.
@@ -449,7 +463,7 @@ This build uses identity preprocessing unless
 without the normalization constants used to train the deployed model.
 
 Package the BDT-linked image and deploy its newly packaged `BOOT.BIN` together
-with `dummy_kernel_bdt.xclbin`. On the board, the host must print:
+with `dummy_kernel_bdt_word2.xclbin`. On the board, the host must print:
 
 ```text
 Frame 0 BDT score: <score> (raw <raw>)
@@ -472,7 +486,8 @@ The old fixed `200`-count veto caused `test_adc` to wait forever at higher
 input amplitudes: each PPS candidate was discarded internally and the kernel
 waited for another PPS. After changing this interface, rebuild HLS, relink,
 repackage, and cross-compile the host. Deploy the newly packaged `BOOT.BIN`,
-the new `dummy_kernel.xclbin`, and the new `test_adc` together. PetaLinux, the
+the new `dummy_kernel_bdt_word2.xclbin`, and the new `test_adc_word2`
+together. PetaLinux, the
 Vitis platform, and the extensible XSA do not need to be rebuilt.
 
 The link configuration explicitly names the single compute unit
@@ -491,13 +506,13 @@ change only removes an internal debug tap; reuse the verified
 `images/linux` directory. The existing dummy-kernel `.xo` is also reusable.
 
 Archive the Vitis and Vivado link reports. The first link is accepted only if
-it finishes without errors, meets timing on the 76.8 MHz kernel clock, and
+it finishes without errors, meets timing on the 307.2 MHz kernel clock, and
 contains exactly the expected stream connections. Inspect the resulting
 container with:
 
 ```bash
 xclbinutil --info \
-  --input build/vitis_dummy_kernel_2025_2/dummy_kernel.xclbin
+  --input build/vitis_dummy_kernel_2025_2/dummy_kernel_word2.xclbin
 ```
 
 Cross-compile the Linux host with the SDK generated by the matching PetaLinux
@@ -514,12 +529,12 @@ source build/rfsoc-linux-2025_2/images/linux/sdk/\
 environment-setup-cortexa72-cortexa53-amd-linux
 
 $CXX $CXXFLAGS -std=c++17 -O2 -Wall -Wextra \
-  -o build/vitis_dummy_kernel_2025_2/test_adc \
+  -o build/vitis_dummy_kernel_2025_2/test_adc_word2 \
   src/vitis_adc_platform/host.cpp \
   $LDFLAGS -lxrt_coreutil -pthread
 
 file build/vitis_dummy_kernel_2025_2/test_adc
-test -x build/vitis_dummy_kernel_2025_2/test_adc
+test -x build/vitis_dummy_kernel_2025_2/test_adc_word2
 ```
 
 `file` must report an ARM AArch64 executable. Copy it beside the matching

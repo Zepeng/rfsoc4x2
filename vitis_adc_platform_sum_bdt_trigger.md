@@ -42,20 +42,20 @@ duplicate definition.
 
 ## Trigger Flow
 
-Each stream word is 128 bits, containing eight signed 16-bit samples. The kernel
+Each stream word is 32 bits, containing two signed 16-bit samples. The kernel
 reads ADC_D, ADC_C, ADC_B, ADC_A, and `PPS_TRIG_AXIS` in lockstep.
 
 For every stream word, the acquisition loop:
 
-1. Packs the four raw ADC words into the 512-bit waveform ring buffer.
-2. Sign-extends all eight lanes from all four channels.
+1. Packs the four raw ADC words into the 128-bit waveform ring buffer.
+2. Sign-extends both lanes from all four channels.
 3. Computes `sum_sample = ADC_D + ADC_C + ADC_B + ADC_A` for each lane.
 4. Marks the word over threshold if any lane has
    `sum_sample >= sum_threshold`.
-5. Maintains `over_threshold_ring[2048]` and `over_threshold_count`.
-6. Computes the eight-lane average of the sum waveform.
+5. Maintains `over_threshold_ring[8192]` and `over_threshold_count`.
+6. Computes the two-lane average of the sum waveform.
 7. Stores that average beside the raw word in
-   `word_average_buffer[2048]`.
+   `word_average_buffer[8192]`.
 
 The max-threshold tracking and average-buffer writes run inside the same
 pipelined capture loop as the waveform ring-buffer write.
@@ -72,7 +72,7 @@ For accepted candidates in the real-BDT build, the kernel uses a generated
 capture-word map to read the 250 selected features directly from the
 trigger-aligned `word_average_buffer`. The dual-port BRAM supplies two features
 per cycle, so the gather takes 125 pipelined iterations. The kernel then
-calculates the BDT score before starting the 2048-word waveform write to DDR.
+calculates the BDT score before starting the 8192-word waveform write to DDR.
 Thus identical accepted capture buffers always produce identical BDT feature
 vectors, and the score is available inside the PL without waiting for the
 26.7-us waveform transfer. The existing metadata word remains after the
@@ -90,7 +90,7 @@ The kernel has two score implementations:
 The real BDT path:
 
 1. Reads the 250 selected feature indices from `bdt_feature_indices.h`.
-2. Uses their generated 2048-word capture addresses to gather two features per
+2. Uses their generated 8192-word capture addresses to gather two features per
    cycle from the trigger-aligned sum-waveform buffer.
 3. Applies optional z-score preprocessing from `bdt_norm_config.h`.
 4. Calls `bdt.decision_function(features, score)`.
@@ -139,20 +139,20 @@ preprocessing until that file is copied in.
 
 ## Output Buffer Layout
 
-The kernel returns `2049` packed 512-bit words:
+The kernel returns `8193` packed 128-bit words:
 
 ```text
-buffer0[0..2047]  chronological four-channel waveform
-buffer0[2048]     trigger/BDT metadata
+buffer0[0..8191]  chronological four-channel waveform
+buffer0[8192]     trigger/BDT metadata
 ```
 
 Waveform word layout:
 
 ```text
-bits [127:0]    ADC_D / RFDC_DATA_AXIS
-bits [255:128]  ADC_C / RFDC_TRIG_AXIS
-bits [383:256]  ADC_B / RFDC_ADC_B_AXIS
-bits [511:384]  ADC_A / RFDC_ADC_A_AXIS
+bits [31:0]    ADC_D / RFDC_DATA_AXIS
+bits [63:32]   ADC_C / RFDC_TRIG_AXIS
+bits [95:64]   ADC_B / RFDC_ADC_B_AXIS
+bits [127:96]  ADC_A / RFDC_ADC_A_AXIS
 ```
 
 Metadata word layout:
@@ -163,8 +163,8 @@ bit  [32]    score valid flag
 bit  [33]    real BDT flag: 1 = Conifer BDT, 0 = dummy fallback
 ```
 
-The host allocates and migrates `2049` words, unpacks only the first `2048` words
-into `wave.txt` or the Ethernet stream, and decodes `buffer0[2048]` separately.
+The host allocates and migrates `8193` words, unpacks only the first `8192` words
+into `wave.txt` or the Ethernet stream, and decodes `buffer0[8192]` separately.
 
 ## HLS Build Setup
 
@@ -206,7 +206,7 @@ stream_connect = RFDC_TRIG_AXIS:dummy_kernel_1.trigger_in
 stream_connect = RFDC_ADC_B_AXIS:dummy_kernel_1.adc_b_in
 stream_connect = RFDC_ADC_A_AXIS:dummy_kernel_1.adc_a_in
 stream_connect = PPS_TRIG_AXIS:dummy_kernel_1.ext_trigger_in
-clock=76800000:dummy_kernel
+clock=307200000:dummy_kernel
 ```
 
 ## Workstation Vitis Update
@@ -277,7 +277,7 @@ If the current box only contains:
 
 ```ini
 [hls]
-clock=76800000:dummy_kernel
+clock=307200000:dummy_kernel
 ```
 
 change it to:
@@ -288,7 +288,7 @@ include=<bdt project>/firmware
 define=USE_CONIFER_BDT=1
 
 [hls]
-clock=76800000:dummy_kernel
+clock=307200000:dummy_kernel
 ```
 
 Only add this define after generating and copying `bdt_norm_config.h`:
@@ -302,7 +302,7 @@ box, leave the config box as:
 
 ```ini
 [hls]
-clock=76800000:dummy_kernel
+clock=307200000:dummy_kernel
 ```
 
 and put this in the kernel `V++ command line options` box instead:
@@ -367,7 +367,7 @@ include=<kernel project>/src
 define=USE_CONIFER_BDT=1
 
 [hls]
-clock=76800000:dummy_kernel
+clock=307200000:dummy_kernel
 ```
 
 Then clean and rebuild `test_adc_kernels`, rebuild the hardware-link/system
@@ -420,7 +420,7 @@ comparator/mux networks.
 `bdt_sum_score` was split into a three-part API implemented by both BDT modes
 (`bdt_feature_offset`, `bdt_gather_feature`, `bdt_finalize_score`, plus
 `BDT_FEATURE_COUNT`). `export_bdt_headers.py` converts every selected 1250-bin
-feature index into its deterministic source word in the 2048-word accepted
+feature index into its deterministic source word in the 8192-word accepted
 capture. `gather_bdt_feature_pairs` reads two of those source words per cycle
 from the dual-port `word_average_buffer`, then `bdt_finalize_score` evaluates
 the forest before `write_triggered_waveform` starts. The waveform word comes
@@ -448,15 +448,17 @@ From `csynth.rpt` of the `USE_CONIFER_BDT` build:
 Net effect: dedicated BDT time per event dropped from ~270 cycles (~3.5 us) to
 ~1 cycle (~13 ns) after the writeout loop.
 
-These measurements predate the fast pre-write gather. Re-run HLS and confirm:
+These measurements predate both the fast pre-write gather and the two-sample
+word evaluation. Re-run HLS and confirm:
 
 - `gather_bdt_feature_pairs`: trip count 125 and `II=1`, approximately
   127 cycles including BRAM latency.
-- `bdt_finalize_score`: one cycle.
-- `write_triggered_waveform`: trip count 2048 and `II=1`.
+- `bdt_finalize_score`: use the newly reported latency; the tighter clock may
+  require multiple pipeline stages.
+- `write_triggered_waveform`: trip count 8192 and `II=1`.
 
-At 76.8 MHz the expected capture-complete-to-score latency is approximately
-1.67 us, while the host still receives the score after waveform writeout.
+At 307.2 MHz the 125-cycle gather is approximately 0.41 us, while the host
+still receives the score after waveform writeout.
 
 Timing watch items for the Vivado implementation stage:
 
@@ -512,7 +514,7 @@ Unchanged: `dummy_kernel.cpp`, `bdt_sum_trigger_conifer.h`, `host.cpp` — as
 long as the score type stays `ap_fixed<18,8>` (otherwise update
 `BDT_SCORE_BITS` in `export_bdt_headers.py` and `BDT_SCORE_SCALE` in
 `host.cpp`). Training preprocessing must replicate the FPGA exactly: 4-channel
-sum, integer 8-lane average (`>>3`), the generated deterministic 2048-to-1250
+sum, integer two-lane average (`>>1`), the generated deterministic 8192-to-1250
 source-word mapping, then the scalar z-score. Validate offline
 (`model.decision_function` vs float predictions) before the board test;
 on board, metadata bit 33 (`score_real = 1`) confirms the conifer path.

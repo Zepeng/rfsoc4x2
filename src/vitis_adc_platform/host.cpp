@@ -44,19 +44,24 @@
 #include <thread>
 #include <vector>
 
-#define DATA_SIZE 2048
-#define STREAM_WIDTH 128
-#define CHANNEL_COUNT 4
-#define PACKED_WIDTH (CHANNEL_COUNT * STREAM_WIDTH)
+#include "adc_stream_config.h"
 
-static_assert(PACKED_WIDTH == 512, "Host packing expects four 128-bit streams");
+#define DATA_SIZE RFDC_CAPTURE_WORDS
+#define STREAM_WIDTH RFDC_STREAM_WIDTH
+#define CHANNEL_COUNT RFDC_CHANNEL_COUNT
+#define PACKED_WIDTH RFDC_PACKED_WIDTH
 
-struct alignas(64) data_t {
+static_assert((PACKED_WIDTH % 64) == 0,
+              "Host packing must contain an integral number of 64-bit words");
+static_assert(PACKED_WIDTH >= 64,
+              "Packed output must have room for the metadata fields");
+
+struct alignas(PACKED_WIDTH / 8) data_t {
     std::array<uint64_t, PACKED_WIDTH / 64> words{};
 };
 
 static_assert(sizeof(data_t) == PACKED_WIDTH / 8,
-              "Host packed word must match the 512-bit kernel interface");
+              "Host packed word must match the kernel memory interface");
 
 static const size_t SAMPLES_PER_WORD = STREAM_WIDTH / 16;
 static const size_t SAMPLES_PER_FRAME = DATA_SIZE * SAMPLES_PER_WORD;
@@ -454,10 +459,10 @@ static void pack_interleaved_channel_samples(
     for (size_t i = 0; i < DATA_SIZE; ++i) {
         const data_t& packed_word = source_hw_data[i];
         for (size_t j = 0; j < SAMPLES_PER_WORD; ++j) {
-            size_t word_in_stream = j / 4;
-            size_t shift = (j % 4) * 16;
             for (size_t stream = 0; stream < CHANNEL_COUNT; ++stream) {
-                size_t packed_index = stream * (STREAM_WIDTH / 64) + word_in_stream;
+                size_t bit_offset = stream * STREAM_WIDTH + j * 16;
+                size_t packed_index = bit_offset / 64;
+                size_t shift = bit_offset % 64;
                 uint16_t sample =
                     static_cast<uint16_t>((packed_word.words[packed_index] >> shift) & 0xffff);
                 samples.push_back(static_cast<int16_t>(sample));

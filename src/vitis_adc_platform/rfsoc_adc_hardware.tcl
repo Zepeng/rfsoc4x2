@@ -704,11 +704,11 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   set usp_rf_data_converter_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:usp_rf_data_converter:2.6 usp_rf_data_converter_0 ]
   set_property -dict [list \
     CONFIG.ADC0_Multi_Tile_Sync {false} \
-    CONFIG.ADC0_Outclk_Freq {76.800} \
+    CONFIG.ADC0_Outclk_Freq {307.200} \
     CONFIG.ADC0_PLL_Enable {true} \
     CONFIG.ADC0_Refclk_Freq {491.520} \
     CONFIG.ADC0_Sampling_Rate {4.9152} \
-    CONFIG.ADC2_Outclk_Freq {76.800} \
+    CONFIG.ADC2_Outclk_Freq {307.200} \
     CONFIG.ADC2_PLL_Enable {true} \
     CONFIG.ADC2_Refclk_Freq {491.520} \
     CONFIG.ADC2_Sampling_Rate {4.9152} \
@@ -716,10 +716,10 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
     CONFIG.ADC_Data_Type02 {0} \
     CONFIG.ADC_Data_Type20 {0} \
     CONFIG.ADC_Data_Type22 {0} \
-    CONFIG.ADC_Data_Width00 {8} \
-    CONFIG.ADC_Data_Width02 {8} \
-    CONFIG.ADC_Data_Width20 {8} \
-    CONFIG.ADC_Data_Width22 {8} \
+    CONFIG.ADC_Data_Width00 {2} \
+    CONFIG.ADC_Data_Width02 {2} \
+    CONFIG.ADC_Data_Width20 {2} \
+    CONFIG.ADC_Data_Width22 {2} \
     CONFIG.ADC_Decimation_Mode00 {8} \
     CONFIG.ADC_Decimation_Mode02 {8} \
     CONFIG.ADC_Decimation_Mode20 {8} \
@@ -854,7 +854,7 @@ pagesize -pg 1 -db -bbox -sgen -120 0 1770 910
   set_property PFM.CLOCK {clk_out1 {id "1" is_default "true" proc_sys_reset "/proc_sys_reset_clk_out200M" status "fixed" freq_hz "200000000"} clk_out2 {id "2" is_default "false" proc_sys_reset "/proc_sys_reset_clk_out400M" status "fixed" freq_hz "400000000"}} [get_bd_cells /clk_wiz_0]
   set_property PFM.IRQ {intr { id 0 range 32 }} [get_bd_cells /axi_intc_0]
   set_property PFM.AXI_PORT {M02_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M03_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M04_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M05_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M06_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M07_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M08_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M09_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M10_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M11_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M12_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M13_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M14_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M15_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M16_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"} M17_AXI {memport "M_AXI_GP" sptag "" memory "" is_range "false"}} [get_bd_cells /ps8_0_axi_periph]
-  set_property PFM.CLOCK {clk_adc0 {id "3" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc0" status "fixed" freq_hz "76800000"} clk_adc2 {id "4" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc2" status "fixed" freq_hz "76800000"}} [get_bd_cells /usp_rf_data_converter_0]
+  set_property PFM.CLOCK {clk_adc0 {id "3" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc0" status "fixed" freq_hz "307200000"} clk_adc2 {id "4" is_default "false" proc_sys_reset "/proc_sys_reset_clk_adc2" status "fixed" freq_hz "307200000"}} [get_bd_cells /usp_rf_data_converter_0]
   set_property PFM.AXIS_PORT {m00_axis {type "M_AXIS" sptag "RFDC_DATA_AXIS" is_range "false"} m02_axis {type "M_AXIS" sptag "RFDC_TRIG_AXIS" is_range "false"} m20_axis {type "M_AXIS" sptag "RFDC_ADC_B_AXIS" is_range "false"} m22_axis {type "M_AXIS" sptag "RFDC_ADC_A_AXIS" is_range "false"}} [get_bd_cells /usp_rf_data_converter_0]
   set_property PFM.AXIS_PORT {m_axis {type "M_AXIS" sptag "PPS_TRIG_AXIS" is_range "false"}} [get_bd_cells /pps_trigger_axis_0]
 

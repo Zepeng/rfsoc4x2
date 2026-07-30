@@ -2,8 +2,9 @@
 #
 # This script deliberately keeps rfsoc_adc_hardware_2023_2_1.tcl unchanged as
 # the known-good design description. It adapts generated run-flow names, the
-# board-repository path, incompatible metadata, and the legacy PPS ILA AXIS
-# ready probe before sourcing that design in Vivado 2025.2.
+# board-repository path, incompatible metadata, the legacy PPS ILA AXIS ready
+# probe, and the two-sample RFDC evaluation settings before sourcing that
+# design in Vivado 2025.2.
 #
 # Example:
 #   vivado -mode batch \
@@ -207,6 +208,41 @@ set migrated_text [string map [list \
   {Vivado Synthesis 2023} {Vivado Synthesis 2025} \
   {Vivado Implementation 2023} {Vivado Implementation 2025} \
 ] $legacy_text]
+
+# Keep the legacy source file intact, but build the 2025.2 evaluation platform
+# with two 16-bit samples per RFDC AXI beat. Decimation remains 8, so preserving
+# the 614.4 MS/s output rate requires a 307.2 MHz fabric clock.
+foreach width_adaptation [list \
+  [list {ADC tile 0 output clock} \
+    {CONFIG.ADC0_Outclk_Freq {76.800}} \
+    {CONFIG.ADC0_Outclk_Freq {307.200}}] \
+  [list {ADC tile 2 output clock} \
+    {CONFIG.ADC2_Outclk_Freq {76.800}} \
+    {CONFIG.ADC2_Outclk_Freq {307.200}}] \
+  [list {ADC slice 00 data width} \
+    {CONFIG.ADC_Data_Width00 {8}} \
+    {CONFIG.ADC_Data_Width00 {2}}] \
+  [list {ADC slice 02 data width} \
+    {CONFIG.ADC_Data_Width02 {8}} \
+    {CONFIG.ADC_Data_Width02 {2}}] \
+  [list {ADC slice 20 data width} \
+    {CONFIG.ADC_Data_Width20 {8}} \
+    {CONFIG.ADC_Data_Width20 {2}}] \
+  [list {ADC slice 22 data width} \
+    {CONFIG.ADC_Data_Width22 {8}} \
+    {CONFIG.ADC_Data_Width22 {2}}] \
+  [list {RFDC platform clock frequencies} \
+    {freq_hz "76800000"} \
+    {freq_hz "307200000"}] \
+] {
+  lassign $width_adaptation description legacy_fragment migrated_fragment
+  if {[string first $legacy_fragment $migrated_text] < 0} {
+    ::rfsoc_adc_2025_2::fail \
+      "the 2023.2.1 source changed: $description adaptation point was not found"
+  }
+  set migrated_text \
+    [string map [list $legacy_fragment $migrated_fragment] $migrated_text]
+}
 
 # Project Tcl exported by Vivado 2023.2.1 includes session message filters and
 # file metadata that should not be replayed in 2025.2. In particular, LIBRARY
