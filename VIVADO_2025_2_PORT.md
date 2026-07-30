@@ -401,8 +401,8 @@ the same kernel name and interfaces, but defines `USE_CONIFER_BDT` and writes
 distinct `.xo` and `.xclbin` names to prevent a fallback artifact from being
 mistaken for the real model.
 
-The generated model is intentionally external to this repository. Verify it
-before starting HLS:
+The three generated model sources required by this build are tracked in the
+repository. Verify the checkout before starting HLS:
 
 ```bash
 for f in BDT.h BDT.cpp parameters.h; do
@@ -555,9 +555,9 @@ sudo env PYTHONPATH=/home/petalinux/xrfclk-2.0 \
 sudo ls /dev/spidev*
 ```
 
-The real BDT depends on ignored, externally generated files in
-`csi_bdt_prj_kv260/firmware`; pin or archive `BDT.h`, `BDT.cpp`, and
-`parameters.h` before calling the port reproducible.
+The exact generated `BDT.h`, `BDT.cpp`, and `parameters.h` inputs used by this
+port are tracked under `csi_bdt_prj_kv260/firmware`. The rest of the generated
+Conifer project remains ignored.
 
 Board acceptance tests are the existing reference-clock, PPS/ILA, four-channel
 continuity, cross-tile phase, power-cycle, XRT, and BDT timing checks in

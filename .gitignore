@@ -1,3 +1,8 @@
 sd_card/
-csi_bdt_prj_kv260/
+csi_bdt_prj_kv260/*
+!csi_bdt_prj_kv260/firmware/
+csi_bdt_prj_kv260/firmware/*
+!csi_bdt_prj_kv260/firmware/BDT.h
+!csi_bdt_prj_kv260/firmware/BDT.cpp
+!csi_bdt_prj_kv260/firmware/parameters.h
 /build/

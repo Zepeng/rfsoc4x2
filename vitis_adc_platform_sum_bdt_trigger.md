@@ -24,7 +24,7 @@ Tracked integration files:
 - `src/vitis_adc_platform/export_bdt_headers.py`
 - `vitis_adc_platform_sum_bdt_trigger.md`
 
-External generated BDT firmware used by the HLS build:
+Tracked generated BDT firmware used by the HLS build:
 
 - `csi_bdt_prj_kv260/firmware/BDT.h`
 - `csi_bdt_prj_kv260/firmware/BDT.cpp`
