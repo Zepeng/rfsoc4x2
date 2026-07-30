@@ -54,10 +54,11 @@ For every stream word, the acquisition loop:
    `sum_sample >= sum_threshold`.
 5. Maintains `over_threshold_ring[2048]` and `over_threshold_count`.
 6. Computes the eight-lane average of the sum waveform.
-7. Downsamples the 2048 capture words into `downsample_history[1250]`.
+7. Stores that average beside the raw word in
+   `word_average_buffer[2048]`.
 
-The max-threshold tracking and downsample writes run inside the same pipelined
-capture loop as the waveform ring-buffer write.
+The max-threshold tracking and average-buffer writes run inside the same
+pipelined capture loop as the waveform ring-buffer write.
 
 When the PPS candidate completes, the runtime `sum_gate_mode` selects one of:
 
@@ -67,13 +68,16 @@ veto:     accept only when over_threshold_count == 0
 require:  accept only when over_threshold_count != 0
 ```
 
-For accepted candidates, the kernel copies the waveform to DDR and gathers the
-BDT features inside the same pipelined writeout loop (the gather rides along in
-the first 250 iterations, reading `downsample_history` while the waveform words
-come from `capture_buffer`). After the loop, the BDT score is computed in a few
-cycles and written as one metadata word. The BDT therefore adds essentially no
-latency on top of the waveform readout. If a sum gate rejects a candidate, it is
-discarded internally and the kernel waits for the next PPS candidate.
+For accepted candidates, the kernel starts a fresh 2048-to-1250 accumulator at
+the oldest word of the trigger-aligned capture. While copying the waveform to
+DDR, it reads the corresponding word average, performs the deterministic
+downsampling, and gathers each requested BDT feature when its 1250-bin index is
+reached. Thus identical accepted capture buffers always produce identical BDT
+feature vectors; the mapping no longer depends on how long the kernel waited
+for PPS. After the loop, the BDT score is computed in a few cycles and written
+as one metadata word. The BDT therefore adds essentially no latency on top of
+the waveform readout. If a sum gate rejects a candidate, it is discarded
+internally and the kernel waits for the next PPS candidate.
 
 ## BDT Modes
 
@@ -404,25 +408,29 @@ host.
 ### Latency analysis
 
 The original BDT inference took about 3.5 us at the 76.8 MHz kernel clock,
-and roughly 95% of it was the feature gather: 250 serial reads from the
-BRAM-backed `downsample_history[1250]` at one read per cycle. The tree forest
-itself was never the bottleneck; conifer evaluates all 50 trees as parallel
+and roughly 95% of it was the feature gather: 250 serial reads from a
+BRAM-backed downsample buffer at one read per cycle. The tree forest itself was
+never the bottleneck; conifer evaluates all 50 trees as parallel
 comparator/mux networks.
 
-### Implementation (commit 72f733c)
+### Current implementation
 
 `bdt_sum_score` was split into a three-part API implemented by both BDT modes
 (`bdt_feature_offset`, `bdt_gather_feature`, `bdt_finalize_score`, plus
-`BDT_FEATURE_COUNT`). The feature gather now rides inside the first 250
-iterations of the `write_triggered_waveform` loop: the waveform word comes from
-`capture_buffer` (URAM) while the gather reads `downsample_history` (BRAM), so
-there is no port conflict and the loop keeps `II=1`. The score is computed
-after the loop and packed into the metadata word as before. Event acceptance
-(`sum_max_accept`) is unchanged; the score remains diagnostic. The math in both
-modes is bit-identical to the previous version, so dummy-mode scores from older
-boards are a regression reference.
+`BDT_FEATURE_COUNT`). The feature gather rides inside the
+`write_triggered_waveform` loop. The waveform word comes from
+`capture_buffer` (URAM), while its eight-lane average comes from
+`word_average_buffer` (BRAM), so there is no port conflict. The current
+implementation starts the 2048-to-1250 accumulator at the oldest accepted
+capture word and gathers features as their deterministic output-bin indices
+are reached. The score is computed after the loop and packed into the metadata
+word as before. Event acceptance is unchanged; the score remains diagnostic.
 
-### Synthesis results (workstation build, 2026-06)
+The original gather fusion was introduced in commit `72f733c`. The
+trigger-anchored resampling correction replaces its continuously phased
+downsample history with the capture-aligned average buffer described above.
+
+### Previous synthesis results (workstation build, 2026-06)
 
 From `csynth.rpt` of the `USE_CONIFER_BDT` build:
 
@@ -437,6 +445,10 @@ From `csynth.rpt` of the `USE_CONIFER_BDT` build:
 
 Net effect: dedicated BDT time per event dropped from ~270 cycles (~3.5 us) to
 ~1 cycle (~13 ns) after the writeout loop.
+
+These measurements predate the trigger-anchored resampling correction. Re-run
+HLS and confirm that `write_triggered_waveform` remains `II=1`; its BRAM now
+contains 2048 word averages instead of 1250 continuously phased bins.
 
 Timing watch items for the Vivado implementation stage:
 

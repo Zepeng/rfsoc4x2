@@ -135,18 +135,6 @@ static void advance_index(unsigned int& index, unsigned int limit)
     }
 }
 
-static unsigned int circular_offset(unsigned int start_index,
-                                    unsigned int offset,
-                                    unsigned int limit)
-{
-#pragma HLS INLINE
-    unsigned int index = start_index + offset;
-    if (index >= limit) {
-        index -= limit;
-    }
-    return index;
-}
-
 static ap_uint<PACKED_WIDTH> pack_metadata(bdt_score_raw_t bdt_score_raw,
                                            bool bdt_score_valid,
                                            bool bdt_score_real)
@@ -190,8 +178,12 @@ static bdt_score_raw_t bdt_finalize_score(ap_int<32> accumulator,
 }
 #endif
 
-static_assert(BDT_FEATURE_COUNT <= CAPTURE_WORDS,
-              "BDT feature gather must fit inside the waveform writeout loop");
+static_assert(BDT_SOURCE_BINS < CAPTURE_WORDS,
+              "BDT downsampling requires fewer output bins than capture words");
+static_assert(BDT_FEATURE_COUNT <= BDT_SOURCE_BINS,
+              "BDT feature count must fit inside the downsampled waveform");
+static_assert(PRETRIGGER_WORDS + 1 + POSTTRIGGER_WORDS == CAPTURE_WORDS,
+              "Accepted trigger window must initialize every capture word");
 
 extern "C" {
 void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
@@ -222,8 +214,8 @@ void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
     ap_uint<1> over_threshold_ring[CAPTURE_WORDS];
 #pragma HLS BIND_STORAGE variable=over_threshold_ring type=ram_2p impl=bram
 
-    sum_sample_t downsample_history[BDT_SOURCE_BINS];
-#pragma HLS BIND_STORAGE variable=downsample_history type=ram_2p impl=bram
+    sum_sample_t word_average_buffer[CAPTURE_WORDS];
+#pragma HLS BIND_STORAGE variable=word_average_buffer type=ram_2p impl=bram
 
 init_trigger_state:
     for (unsigned int i = 0; i < CAPTURE_WORDS; ++i) {
@@ -231,18 +223,10 @@ init_trigger_state:
         over_threshold_ring[i] = 0;
     }
 
-init_downsample_state:
-    for (unsigned int i = 0; i < BDT_SOURCE_BINS; ++i) {
-#pragma HLS PIPELINE II = 1
-        downsample_history[i] = 0;
-    }
-
     unsigned int write_idx = 0;
     unsigned int pretrigger_count = 0;
     unsigned int posttrigger_count = 0;
     unsigned int over_threshold_count = 0;
-    unsigned int downsample_write_idx = 0;
-    unsigned int downsample_accumulator = 0;
     bool pretrigger_ready = false;
     bool previous_ext_trigger_level = false;
     bool ext_trigger_armed = false;
@@ -257,6 +241,7 @@ capture_external_trigger:
         while (!candidate_complete) {
 #pragma HLS PIPELINE II = 1
 #pragma HLS DEPENDENCE variable=capture_buffer inter false
+#pragma HLS DEPENDENCE variable=word_average_buffer inter false
             ap_uint<PACKED_WIDTH> packed;
             ap_uint<STREAM_WIDTH> data_word;
             ap_uint<STREAM_WIDTH> trigger_word;
@@ -292,14 +277,8 @@ capture_external_trigger:
                 over_threshold_count++;
             }
 
-            downsample_accumulator += BDT_SOURCE_BINS;
-            if (downsample_accumulator >= CAPTURE_WORDS) {
-                downsample_accumulator -= CAPTURE_WORDS;
-                downsample_history[downsample_write_idx] = word_average;
-                advance_index(downsample_write_idx, BDT_SOURCE_BINS);
-            }
-
             capture_buffer[write_idx] = packed;
+            word_average_buffer[write_idx] = word_average;
             advance_index(write_idx, CAPTURE_WORDS);
 
             bool ext_trigger_level = ext_trigger_word[0];
@@ -354,16 +333,31 @@ capture_external_trigger:
     ap_int<32> bdt_features = 0;
 #endif
 
+    // Anchor the 2048-to-1250 mapping to the oldest word of the accepted
+    // trigger-aligned capture.  Starting this accumulator while waiting for
+    // PPS would make the selected source words depend on kernel launch time.
+    unsigned int downsample_accumulator = 0;
+    unsigned int downsample_bin_idx = 0;
+    unsigned int feature_write_idx = 0;
+
 write_triggered_waveform:
     for (unsigned int out_idx = 0; out_idx < CAPTURE_WORDS; ++out_idx) {
 #pragma HLS PIPELINE II = 1
         buffer0[out_idx] = capture_buffer[read_idx];
+        sum_sample_t word_average = word_average_buffer[read_idx];
         advance_index(read_idx, CAPTURE_WORDS);
-        if (out_idx < BDT_FEATURE_COUNT) {
-            unsigned int index = circular_offset(downsample_write_idx,
-                                                 bdt_feature_offset(out_idx),
-                                                 BDT_SOURCE_BINS);
-            bdt_gather_feature(bdt_features, out_idx, downsample_history[index]);
+
+        downsample_accumulator += BDT_SOURCE_BINS;
+        if (downsample_accumulator >= CAPTURE_WORDS) {
+            downsample_accumulator -= CAPTURE_WORDS;
+            if (feature_write_idx < BDT_FEATURE_COUNT &&
+                downsample_bin_idx == bdt_feature_offset(feature_write_idx)) {
+                bdt_gather_feature(bdt_features,
+                                   feature_write_idx,
+                                   word_average);
+                feature_write_idx++;
+            }
+            downsample_bin_idx++;
         }
     }
 
