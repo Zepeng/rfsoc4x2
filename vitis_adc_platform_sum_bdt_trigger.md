@@ -68,16 +68,17 @@ veto:     accept only when over_threshold_count == 0
 require:  accept only when over_threshold_count != 0
 ```
 
-For accepted candidates, the kernel starts a fresh 2048-to-1250 accumulator at
-the oldest word of the trigger-aligned capture. While copying the waveform to
-DDR, it reads the corresponding word average, performs the deterministic
-downsampling, and gathers each requested BDT feature when its 1250-bin index is
-reached. Thus identical accepted capture buffers always produce identical BDT
-feature vectors; the mapping no longer depends on how long the kernel waited
-for PPS. After the loop, the BDT score is computed in a few cycles and written
-as one metadata word. The BDT therefore adds essentially no latency on top of
-the waveform readout. If a sum gate rejects a candidate, it is discarded
-internally and the kernel waits for the next PPS candidate.
+For accepted candidates in the real-BDT build, the kernel uses a generated
+capture-word map to read the 250 selected features directly from the
+trigger-aligned `word_average_buffer`. The dual-port BRAM supplies two features
+per cycle, so the gather takes 125 pipelined iterations. The kernel then
+calculates the BDT score before starting the 2048-word waveform write to DDR.
+Thus identical accepted capture buffers always produce identical BDT feature
+vectors, and the score is available inside the PL without waiting for the
+26.7-us waveform transfer. The existing metadata word remains after the
+waveform, so the host interface and printed output are unchanged. If a sum
+gate rejects a candidate, it is discarded internally and the kernel waits for
+the next PPS candidate.
 
 ## BDT Modes
 
@@ -89,7 +90,8 @@ The kernel has two score implementations:
 The real BDT path:
 
 1. Reads the 250 selected feature indices from `bdt_feature_indices.h`.
-2. Gathers those bins from the 1250-bin sum-waveform history.
+2. Uses their generated 2048-word capture addresses to gather two features per
+   cycle from the trigger-aligned sum-waveform buffer.
 3. Applies optional z-score preprocessing from `bdt_norm_config.h`.
 4. Calls `bdt.decision_function(features, score)`.
 5. Packs `score[0]` as signed fixed-point raw bits.
@@ -403,7 +405,7 @@ if (sum_max_accept && bdt_accept) {
 Record the final BDT threshold in the same raw fixed-point scale printed by the
 host.
 
-## BDT Latency Optimization (June 2026)
+## BDT Latency Optimization (June-July 2026)
 
 ### Latency analysis
 
@@ -417,14 +419,14 @@ comparator/mux networks.
 
 `bdt_sum_score` was split into a three-part API implemented by both BDT modes
 (`bdt_feature_offset`, `bdt_gather_feature`, `bdt_finalize_score`, plus
-`BDT_FEATURE_COUNT`). The feature gather rides inside the
-`write_triggered_waveform` loop. The waveform word comes from
-`capture_buffer` (URAM), while its eight-lane average comes from
-`word_average_buffer` (BRAM), so there is no port conflict. The current
-implementation starts the 2048-to-1250 accumulator at the oldest accepted
-capture word and gathers features as their deterministic output-bin indices
-are reached. The score is computed after the loop and packed into the metadata
-word as before. Event acceptance is unchanged; the score remains diagnostic.
+`BDT_FEATURE_COUNT`). `export_bdt_headers.py` converts every selected 1250-bin
+feature index into its deterministic source word in the 2048-word accepted
+capture. `gather_bdt_feature_pairs` reads two of those source words per cycle
+from the dual-port `word_average_buffer`, then `bdt_finalize_score` evaluates
+the forest before `write_triggered_waveform` starts. The waveform word comes
+from `capture_buffer` (URAM), so scoring and waveform storage remain separate.
+The metadata is packed after the waveform write as before. Event acceptance is
+unchanged; the score remains diagnostic.
 
 The original gather fusion was introduced in commit `72f733c`. The
 trigger-anchored resampling correction replaces its continuously phased
@@ -446,9 +448,15 @@ From `csynth.rpt` of the `USE_CONIFER_BDT` build:
 Net effect: dedicated BDT time per event dropped from ~270 cycles (~3.5 us) to
 ~1 cycle (~13 ns) after the writeout loop.
 
-These measurements predate the trigger-anchored resampling correction. Re-run
-HLS and confirm that `write_triggered_waveform` remains `II=1`; its BRAM now
-contains 2048 word averages instead of 1250 continuously phased bins.
+These measurements predate the fast pre-write gather. Re-run HLS and confirm:
+
+- `gather_bdt_feature_pairs`: trip count 125 and `II=1`, approximately
+  127 cycles including BRAM latency.
+- `bdt_finalize_score`: one cycle.
+- `write_triggered_waveform`: trip count 2048 and `II=1`.
+
+At 76.8 MHz the expected capture-complete-to-score latency is approximately
+1.67 us, while the host still receives the score after waveform writeout.
 
 Timing watch items for the Vivado implementation stage:
 
@@ -468,12 +476,11 @@ HLS report, under the Vitis kernel project on the build machine:
 <kernel project>/Hardware/build/dummy_kernel/dummy_kernel/dummy_kernel/solution/syn/report/csynth.rpt
 ```
 
-Read the "Performance & Resource Estimates" table: the `bdt_finalize_score`
-row is the BDT inference latency; the `write_triggered_waveform` row must stay
-`II=1`; the absence of a ~250-cycle gather loop confirms the fusion took
-effect (if `dummy_bdt_features` or `bdt_prepare_features` reappears, a stale
-`dummy_kernel.cpp` copy is in the Vitis `src` folder). Post-route truth comes
-from the link-stage Vivado reports (`*util_routed.rpt`,
+Read the "Performance & Resource Estimates" table:
+`gather_bdt_feature_pairs` must have trip count 125 and `II=1`,
+`bdt_finalize_score` is the forest inference latency, and
+`write_triggered_waveform` must remain `II=1`. Post-route truth comes from the
+link-stage Vivado reports (`*util_routed.rpt`,
 `*timing_summary_routed.rpt`).
 
 In the Vivado implementation netlist the BDT cells are named:
@@ -505,20 +512,19 @@ Unchanged: `dummy_kernel.cpp`, `bdt_sum_trigger_conifer.h`, `host.cpp` — as
 long as the score type stays `ap_fixed<18,8>` (otherwise update
 `BDT_SCORE_BITS` in `export_bdt_headers.py` and `BDT_SCORE_SCALE` in
 `host.cpp`). Training preprocessing must replicate the FPGA exactly: 4-channel
-sum, integer 8-lane average (`>>3`), the kernel's 2048-to-1250 accumulator
-downsampling, then the scalar z-score. Validate offline
+sum, integer 8-lane average (`>>3`), the generated deterministic 2048-to-1250
+source-word mapping, then the scalar z-score. Validate offline
 (`model.decision_function` vs float predictions) before the board test;
 on board, metadata bit 33 (`score_real = 1`) confirms the conifer path.
 
 ### Caution for the Later BDT Trigger section
 
-The code snippet above predates the gather fusion: the
-`candidate_bdt_score_*` / `accepted_bdt_score_*` variables no longer exist,
-and the score is now computed during/after the DDR writeout. Gating event
-acceptance on the score will require either moving the gather back before the
-accept decision (restoring ~250 cycles, ideally with the dual-port unroll to
-halve it) or writing out every sum-max candidate and discarding rejected
-frames on the host.
+The score is now computed before waveform DDR writeout, so a later PL trigger
+can compare `bdt_score_raw` immediately and skip the waveform transfer for
+rejected candidates. The example names
+`candidate_bdt_score_*` / `accepted_bdt_score_*` are illustrative and do not
+yet exist in the current kernel. Add the runtime threshold and decision
+metadata only after fixed-point score validation is complete.
 
 ### Repository tags
 

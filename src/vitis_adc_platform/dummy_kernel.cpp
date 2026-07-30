@@ -135,6 +135,18 @@ static void advance_index(unsigned int& index, unsigned int limit)
     }
 }
 
+static unsigned int circular_offset(unsigned int start_index,
+                                    unsigned int offset,
+                                    unsigned int limit)
+{
+#pragma HLS INLINE
+    unsigned int index = start_index + offset;
+    if (index >= limit) {
+        index -= limit;
+    }
+    return index;
+}
+
 static ap_uint<PACKED_WIDTH> pack_metadata(bdt_score_raw_t bdt_score_raw,
                                            bool bdt_score_valid,
                                            bool bdt_score_real)
@@ -184,6 +196,14 @@ static_assert(BDT_FEATURE_COUNT <= BDT_SOURCE_BINS,
               "BDT feature count must fit inside the downsampled waveform");
 static_assert(PRETRIGGER_WORDS + 1 + POSTTRIGGER_WORDS == CAPTURE_WORDS,
               "Accepted trigger window must initialize every capture word");
+#ifdef USE_CONIFER_BDT
+static_assert(BDT_FEATURE_CAPTURE_WORDS == CAPTURE_WORDS,
+              "Generated BDT source-word map has the wrong capture length");
+static_assert(BDT_FEATURE_SOURCE_BINS == BDT_SOURCE_BINS,
+              "Generated BDT source-word map has the wrong downsample length");
+static_assert((BDT_FEATURE_COUNT % 2) == 0,
+              "Two-port BDT gather requires an even feature count");
+#endif
 
 extern "C" {
 void dummy_kernel(ap_uint<PACKED_WIDTH>* buffer0,
@@ -329,24 +349,51 @@ capture_external_trigger:
 #ifdef USE_CONIFER_BDT
     input_arr_t bdt_features;
 #pragma HLS ARRAY_PARTITION variable=bdt_features complete
+#pragma HLS ARRAY_PARTITION variable=BDT_FEATURE_SOURCE_WORD complete
+
+gather_bdt_feature_pairs:
+    for (unsigned int pair_idx = 0;
+         pair_idx < BDT_FEATURE_COUNT / 2;
+         ++pair_idx) {
+#pragma HLS PIPELINE II = 1
+        unsigned int feature_idx0 = 2 * pair_idx;
+        unsigned int feature_idx1 = feature_idx0 + 1;
+        unsigned int source_idx0 =
+            circular_offset(read_idx,
+                            bdt_feature_source_word(feature_idx0),
+                            CAPTURE_WORDS);
+        unsigned int source_idx1 =
+            circular_offset(read_idx,
+                            bdt_feature_source_word(feature_idx1),
+                            CAPTURE_WORDS);
+        sum_sample_t sample0 = word_average_buffer[source_idx0];
+        sum_sample_t sample1 = word_average_buffer[source_idx1];
+        bdt_gather_feature(bdt_features, feature_idx0, sample0);
+        bdt_gather_feature(bdt_features, feature_idx1, sample1);
+    }
+
+    bool bdt_score_valid = false;
+    bool bdt_score_real = false;
+    bdt_score_raw_t bdt_score_raw =
+        bdt_finalize_score(bdt_features, bdt_score_valid, bdt_score_real);
+
 #else
     ap_int<32> bdt_features = 0;
-#endif
-
-    // Anchor the 2048-to-1250 mapping to the oldest word of the accepted
-    // trigger-aligned capture.  Starting this accumulator while waiting for
-    // PPS would make the selected source words depend on kernel launch time.
     unsigned int downsample_accumulator = 0;
     unsigned int downsample_bin_idx = 0;
     unsigned int feature_write_idx = 0;
+#endif
 
 write_triggered_waveform:
     for (unsigned int out_idx = 0; out_idx < CAPTURE_WORDS; ++out_idx) {
 #pragma HLS PIPELINE II = 1
         buffer0[out_idx] = capture_buffer[read_idx];
+#ifndef USE_CONIFER_BDT
         sum_sample_t word_average = word_average_buffer[read_idx];
+#endif
         advance_index(read_idx, CAPTURE_WORDS);
 
+#ifndef USE_CONIFER_BDT
         downsample_accumulator += BDT_SOURCE_BINS;
         if (downsample_accumulator >= CAPTURE_WORDS) {
             downsample_accumulator -= CAPTURE_WORDS;
@@ -359,12 +406,15 @@ write_triggered_waveform:
             }
             downsample_bin_idx++;
         }
+#endif
     }
 
+#ifndef USE_CONIFER_BDT
     bool bdt_score_valid = false;
     bool bdt_score_real = false;
     bdt_score_raw_t bdt_score_raw =
         bdt_finalize_score(bdt_features, bdt_score_valid, bdt_score_real);
+#endif
 
     buffer0[CAPTURE_WORDS] =
         pack_metadata(bdt_score_raw, bdt_score_valid, bdt_score_real);

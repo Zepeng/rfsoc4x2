@@ -434,13 +434,14 @@ v++ -l -t hw \
 test -s build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xclbin
 ```
 
-The checked-in kernel anchors its 2048-to-1250 downsampling accumulator to the
-oldest word of the accepted, trigger-aligned capture. It gathers the 250
-selected samples while the captured waveform is written, then calls the
-generated Conifer `bdt.decision_function()`. Identical capture buffers
-therefore use identical BDT source words regardless of kernel launch time.
-Event acceptance remains controlled only by PPS and the runtime sum mode; the
-BDT score is diagnostic at this stage.
+The checked-in kernel uses a generated deterministic 2048-to-1250 source-word
+map anchored to the accepted, trigger-aligned capture. It reads two selected
+features per cycle from the dual-port average BRAM and calls the generated
+Conifer `bdt.decision_function()` before starting waveform DDR writeout.
+Identical capture buffers therefore use identical BDT source words regardless
+of kernel launch time. Event acceptance remains controlled only by PPS and the
+runtime sum mode; the early BDT score remains diagnostic at this stage and is
+packed into the existing metadata word for the host.
 
 This build uses identity preprocessing unless
 `src/vitis_adc_platform/bdt_norm_config.h` exists and

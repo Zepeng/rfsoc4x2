@@ -55,6 +55,12 @@ static unsigned int bdt_feature_offset(unsigned int i)
     return BDT_FEATURE_INDEX[i];
 }
 
+static unsigned int bdt_feature_source_word(unsigned int i)
+{
+#pragma HLS INLINE
+    return BDT_FEATURE_SOURCE_WORD[i];
+}
+
 static void bdt_gather_feature(input_arr_t features,
                                unsigned int i,
                                sum_sample_t sample)

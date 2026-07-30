@@ -84,21 +84,43 @@ def format_values(values: Sequence[int], per_line: int = 12) -> str:
     return ",\n".join(lines)
 
 
-def write_feature_indices(path: Path, indices: Sequence[int]) -> None:
+def write_feature_indices(
+    path: Path,
+    indices: Sequence[int],
+    capture_words: int,
+    source_bins: int,
+) -> None:
     if not indices:
         raise ValueError("Feature-index array is empty")
     if any(index < 0 for index in indices):
         raise ValueError("Feature indices must be non-negative")
+    if capture_words <= 0 or source_bins <= 0:
+        raise ValueError("Capture words and source bins must be positive")
+    if source_bins >= capture_words:
+        raise ValueError("Source bins must be fewer than capture words")
+    if any(index >= source_bins for index in indices):
+        raise ValueError("Feature indices must be smaller than source bins")
 
     body = format_values(indices)
+    source_words = [
+        (((index + 1) * capture_words) - 1) // source_bins
+        for index in indices
+    ]
+    source_body = format_values(source_words)
     path.write_text(
         "#ifndef BDT_FEATURE_INDICES_H\n"
         "#define BDT_FEATURE_INDICES_H\n\n"
         f"#define BDT_MODEL_INPUTS {len(indices)}\n"
         "#define BDT_SCORE_BITS 18\n"
-        "#define BDT_SCORE_INTEGER_BITS 8\n\n"
+        "#define BDT_SCORE_INTEGER_BITS 8\n"
+        f"#define BDT_FEATURE_CAPTURE_WORDS {capture_words}\n"
+        f"#define BDT_FEATURE_SOURCE_BINS {source_bins}\n\n"
         "static const unsigned int BDT_FEATURE_INDEX[BDT_MODEL_INPUTS] = {\n"
         f"{body}\n"
+        "};\n\n"
+        "static const unsigned int "
+        "BDT_FEATURE_SOURCE_WORD[BDT_MODEL_INPUTS] = {\n"
+        f"{source_body}\n"
         "};\n\n"
         "#endif\n",
         encoding="ascii",
@@ -151,6 +173,18 @@ def main() -> int:
         help="Optional path to norm_stats.npy with [mean, sigma]",
     )
     parser.add_argument(
+        "--capture-words",
+        type=int,
+        default=2048,
+        help="Trigger-aligned capture length in AXIS words. Default: 2048",
+    )
+    parser.add_argument(
+        "--source-bins",
+        type=int,
+        default=1250,
+        help="Downsampled BDT source length. Default: 1250",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("src/vitis_adc_platform"),
@@ -162,7 +196,12 @@ def main() -> int:
 
     feature_indices = as_int_indices(load_npy(args.top_feat_idx))
     feature_header = args.output_dir / "bdt_feature_indices.h"
-    write_feature_indices(feature_header, feature_indices)
+    write_feature_indices(
+        feature_header,
+        feature_indices,
+        args.capture_words,
+        args.source_bins,
+    )
     print(f"Wrote {feature_header} ({len(feature_indices)} indices)")
 
     if args.norm_stats is not None:
