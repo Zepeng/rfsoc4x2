@@ -21,6 +21,7 @@ Tracked integration files:
 - `src/vitis_adc_platform/host.cpp`
 - `src/vitis_adc_platform/bdt_sum_trigger_conifer.h`
 - `src/vitis_adc_platform/bdt_feature_indices.h`
+- `src/vitis_adc_platform/bdt_norm_config.h`
 - `src/vitis_adc_platform/export_bdt_headers.py`
 - `vitis_adc_platform_sum_bdt_trigger.md`
 
@@ -90,11 +91,13 @@ The kernel has two score implementations:
 The real BDT path:
 
 1. Reads the 250 selected feature indices from `bdt_feature_indices.h`.
-2. Uses their generated 8192-word capture addresses to gather two features per
-   cycle from the trigger-aligned sum-waveform buffer.
-3. Applies optional z-score preprocessing from `bdt_norm_config.h`.
-4. Calls `bdt.decision_function(features, score)`.
-5. Packs `score[0]` as signed fixed-point raw bits.
+2. Maps the 10-us training window to 3072 two-sample words at 614.4 MS/s,
+   beginning at the accepted PPS word.
+3. Uses generated center-of-bin capture addresses to gather two features per
+   cycle from the four-channel sum-waveform buffer.
+4. Applies the training z-score from `bdt_norm_config.h`.
+5. Calls `bdt.decision_function(features, score)`.
+6. Packs `score[0]` as signed fixed-point raw bits.
 
 The generated BDT uses `ap_fixed<18,8>`, so the host prints:
 
@@ -111,6 +114,10 @@ Generate the selected feature index header from the BDT project:
 ```shell
 python3 src/vitis_adc_platform/export_bdt_headers.py \
   --top-feat-idx csi_bdt_prj_kv260/pynq_data/top_feat_idx.npy \
+  --capture-words 8192 \
+  --source-bins 1250 \
+  --source-start-word 1638 \
+  --source-window-words 3072 \
   --output-dir src/vitis_adc_platform
 ```
 
@@ -122,20 +129,30 @@ The BDT training script uses z-score normalized waveform samples:
 X = (X.astype(np.float32) - mu) / (sig + 1e-8)
 ```
 
-If `ml_ready/norm_stats.npy` from the matching training run is available,
-generate the normalization header:
+If the original `ml_ready/norm_stats.npy` from the matching training run
+becomes available, regenerate the normalization header:
 
 ```shell
 python3 src/vitis_adc_platform/export_bdt_headers.py \
   --top-feat-idx csi_bdt_prj_kv260/pynq_data/top_feat_idx.npy \
   --norm-stats /path/to/ml_ready/norm_stats.npy \
+  --capture-words 8192 \
+  --source-bins 1250 \
+  --source-start-word 1638 \
+  --source-window-words 3072 \
   --output-dir src/vitis_adc_platform
 ```
 
-Then build with `BDT_USE_NORM_CONFIG` defined. `norm_stats.npy` was not found
-in the current `csi_bdt_prj_kv260` folder or in the original CsI hls4ml
-training area, so the checked-in integration defaults to identity
-preprocessing until that file is copied in.
+The original file is not present in the available CsI tree. The checked-in
+`bdt_norm_config.h` therefore reconstructs the float32 constants from the
+normalized integer lattice in the matching deployed `pynq_data/X_test.npy`:
+
+```text
+mean          = -0.0897942781
+inverse sigma =  1.54739702
+```
+
+The real-BDT HLS configuration defines `BDT_USE_NORM_CONFIG`.
 
 ## Output Buffer Layout
 
@@ -177,11 +194,11 @@ For the real BDT build, add these to the HLS kernel build:
 - Make `BDT.cpp` available either in the kernel `src` folder or through the
   BDT firmware include path
 - Compile define: `USE_CONIFER_BDT`
-- Compile define: `BDT_USE_NORM_CONFIG` only when `bdt_norm_config.h` exists
+- Compile define: `BDT_USE_NORM_CONFIG`
 
 For the Vitis 2025.2 command-line flow, these settings are already captured in
 `src/vitis_adc_platform/dummy_kernel_hls_bdt_2025_2.cfg`. It produces
-`build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt.xo`, leaving the tested
+`build/vitis_dummy_kernel_2025_2/dummy_kernel_bdt_word2.xo`, leaving the tested
 dummy-score `.xo` untouched.
 
 Example V++ compile options:
@@ -190,11 +207,6 @@ Example V++ compile options:
 -I<repo>/src/vitis_adc_platform
 -I<repo>/csi_bdt_prj_kv260/firmware
 -DUSE_CONIFER_BDT
-```
-
-Add this only after generating `bdt_norm_config.h`:
-
-```text
 -DBDT_USE_NORM_CONFIG
 ```
 
@@ -227,6 +239,10 @@ Generate the feature-index header before copying files:
 ```shell
 python3 <repo>/src/vitis_adc_platform/export_bdt_headers.py \
   --top-feat-idx <bdt project>/pynq_data/top_feat_idx.npy \
+  --capture-words 8192 \
+  --source-bins 1250 \
+  --source-start-word 1638 \
+  --source-window-words 3072 \
   --output-dir <repo>/src/vitis_adc_platform
 ```
 
@@ -240,6 +256,9 @@ cp <repo>/src/vitis_adc_platform/bdt_sum_trigger_conifer.h \
   <kernel project>/src/
 
 cp <repo>/src/vitis_adc_platform/bdt_feature_indices.h \
+  <kernel project>/src/
+
+cp <repo>/src/vitis_adc_platform/bdt_norm_config.h \
   <kernel project>/src/
 
 cp <bdt project>/firmware/BDT.cpp \
@@ -514,8 +533,8 @@ Unchanged: `dummy_kernel.cpp`, `bdt_sum_trigger_conifer.h`, `host.cpp` — as
 long as the score type stays `ap_fixed<18,8>` (otherwise update
 `BDT_SCORE_BITS` in `export_bdt_headers.py` and `BDT_SCORE_SCALE` in
 `host.cpp`). Training preprocessing must replicate the FPGA exactly: 4-channel
-sum, integer two-lane average (`>>1`), the generated deterministic 8192-to-1250
-source-word mapping, then the scalar z-score. Validate offline
+sum, integer two-lane average with truncation toward zero, the PPS-relative
+10-us/1250-bin center-sample mapping, then the scalar z-score. Validate offline
 (`model.decision_function` vs float predictions) before the board test;
 on board, metadata bit 33 (`score_real = 1`) confirms the conifer path.
 

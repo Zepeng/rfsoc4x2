@@ -6,7 +6,7 @@ import csv
 from pathlib import Path
 
 
-DEFAULT_DURATION_US = 30.0
+DEFAULT_DURATION_US = 10.0
 DEFAULT_AMPLITUDE_VPP = 1.0
 DEFAULT_MAX_CODE = 32767
 np = None
@@ -103,7 +103,8 @@ def parse_args():
         default=DEFAULT_DURATION_US,
         help=(
             "One output waveform period in microseconds. The 1250 input bins "
-            "are interpolated across this duration. Default: 30.0"
+            "are interpolated across this duration. Default: 10.0, matching "
+            "the waveform duration used for training"
         ),
     )
     parser.add_argument(

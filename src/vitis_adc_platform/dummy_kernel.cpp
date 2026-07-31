@@ -36,6 +36,7 @@
 #define SUM_GATE_VETO 1
 #define SUM_GATE_REQUIRE 2
 #define BDT_SOURCE_BINS 1250
+#define BDT_SOURCE_WINDOW_WORDS 3072
 #define DUMMY_BDT_FEATURES 250
 #define BDT_SCORE_FRAC_BITS 10
 #define BDT_SCORE_SCALE_RAW (1 << BDT_SCORE_FRAC_BITS)
@@ -93,6 +94,15 @@ static sample_t sign_extend_sample(ap_uint<16> raw)
     return sample;
 }
 
+static sum_sample_t average_toward_zero(sum_accum_t accumulator)
+{
+#pragma HLS INLINE
+    if (accumulator < 0) {
+        return (sum_sample_t)(-((-accumulator) >> RFDC_WORD_AVERAGE_SHIFT));
+    }
+    return (sum_sample_t)(accumulator >> RFDC_WORD_AVERAGE_SHIFT);
+}
+
 static void summarize_sum_word(ap_uint<STREAM_WIDTH> data_word,
                                ap_uint<STREAM_WIDTH> trigger_word,
                                ap_uint<STREAM_WIDTH> adc_b_word,
@@ -125,8 +135,9 @@ sum_word_lanes:
     }
 
     word_over_threshold = over_threshold;
-    word_average =
-        (sum_sample_t)(accumulator >> RFDC_WORD_AVERAGE_SHIFT);
+    // NumPy's mean(...).astype(np.int16), used by the training scripts,
+    // truncates negative values toward zero rather than toward -infinity.
+    word_average = average_toward_zero(accumulator);
 }
 
 static void advance_index(unsigned int& index, unsigned int limit)
@@ -210,6 +221,13 @@ static_assert(BDT_FEATURE_CAPTURE_WORDS == CAPTURE_WORDS,
               "Generated BDT source-word map has the wrong capture length");
 static_assert(BDT_FEATURE_SOURCE_BINS == BDT_SOURCE_BINS,
               "Generated BDT source-word map has the wrong downsample length");
+static_assert(BDT_FEATURE_SOURCE_START_WORD == PRETRIGGER_WORDS,
+              "BDT source window must start at the accepted PPS word");
+static_assert(BDT_FEATURE_SOURCE_WINDOW_WORDS == BDT_SOURCE_WINDOW_WORDS,
+              "Generated BDT source map has the wrong time-window length");
+static_assert(BDT_FEATURE_SOURCE_START_WORD +
+                  BDT_FEATURE_SOURCE_WINDOW_WORDS <= CAPTURE_WORDS,
+              "BDT source window must fit inside the capture");
 static_assert((BDT_FEATURE_COUNT % 2) == 0,
               "Two-port BDT gather requires an even feature count");
 #endif

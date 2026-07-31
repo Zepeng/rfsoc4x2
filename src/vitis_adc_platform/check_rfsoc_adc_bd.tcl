@@ -10,6 +10,7 @@
 
 set script_dir [file dirname [file normalize [info script]]]
 set hardware_tcl [file join $script_dir rfsoc_adc_hardware.tcl]
+set hardware_tcl_explicit 0
 set start_dir [pwd]
 
 if {[info exists ::argv]} {
@@ -19,6 +20,7 @@ if {[info exists ::argv]} {
       "--hardware_tcl" {
         incr i
         set hardware_tcl [file normalize [lindex $::argv $i]]
+        set hardware_tcl_explicit 1
       }
       default {
         puts "ERROR: Unknown option '$option'"
@@ -43,7 +45,8 @@ proc print_prop {obj prop} {
   return $value
 }
 
-if {[llength [get_projects -quiet]] == 0} {
+set open_projects [get_projects -quiet]
+if {[llength $open_projects] == 0} {
   if {![file exists $hardware_tcl]} {
     fail "Cannot find $hardware_tcl"
   }
@@ -63,6 +66,15 @@ if {[llength [get_projects -quiet]] == 0} {
   if {$source_rc != 0} {
     return -options $source_opts $source_msg
   }
+} else {
+  if {$hardware_tcl_explicit} {
+    fail "--hardware_tcl cannot be checked while a project is already open; close_project and rerun the batch checker"
+  }
+  set project_name [get_property NAME [current_project]]
+  set project_dir "<unknown>"
+  catch {set project_dir [get_property DIRECTORY [current_project]]}
+  puts "INFO: Inspecting already-open project '$project_name' at '$project_dir'"
+  puts "INFO: The hardware Tcl was not sourced for this check"
 }
 
 set bd_files [get_files -quiet *system.bd]

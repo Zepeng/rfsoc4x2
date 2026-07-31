@@ -31,9 +31,12 @@ static_assert(BDT_MODEL_INPUTS == n_features,
 static input_t bdt_preprocess_sample(sum_sample_t sample)
 {
 #pragma HLS INLINE
-    ap_fixed<32, 16> normalized =
-        ((ap_fixed<32, 16>)sample - (ap_fixed<32, 16>)BDT_NORM_MEAN) *
-        (ap_fixed<32, 16>)BDT_NORM_INV_SIGMA;
+    // Keep enough integer range for a signed sum of four 16-bit channels
+    // through normalization. The final AP_SAT conversion intentionally clips
+    // values outside the Conifer model's ap_fixed<18,8> input range.
+    ap_fixed<40, 24> normalized =
+        ((ap_fixed<40, 24>)sample - (ap_fixed<40, 24>)BDT_NORM_MEAN) *
+        (ap_fixed<40, 24>)BDT_NORM_INV_SIGMA;
     ap_fixed<18, 8, AP_TRN, AP_SAT> saturated = normalized;
     return (input_t)saturated;
 }

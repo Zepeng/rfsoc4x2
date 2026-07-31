@@ -89,21 +89,32 @@ def write_feature_indices(
     indices: Sequence[int],
     capture_words: int,
     source_bins: int,
+    source_start_word: int,
+    source_window_words: int,
 ) -> None:
     if not indices:
         raise ValueError("Feature-index array is empty")
     if any(index < 0 for index in indices):
         raise ValueError("Feature indices must be non-negative")
-    if capture_words <= 0 or source_bins <= 0:
-        raise ValueError("Capture words and source bins must be positive")
-    if source_bins >= capture_words:
-        raise ValueError("Source bins must be fewer than capture words")
+    if capture_words <= 0 or source_bins <= 0 or source_window_words <= 0:
+        raise ValueError(
+            "Capture words, source bins, and source-window words must be positive"
+        )
+    if source_start_word < 0:
+        raise ValueError("Source-start word must be non-negative")
+    if source_start_word + source_window_words > capture_words:
+        raise ValueError("BDT source window must fit inside the capture")
+    if source_bins >= source_window_words:
+        raise ValueError("Source bins must be fewer than source-window words")
     if any(index >= source_bins for index in indices):
         raise ValueError("Feature indices must be smaller than source bins")
 
     body = format_values(indices)
+    # Pick the two-sample RFDC word nearest the center of each model time bin.
+    # The source window may be a trigger-relative subset of the full capture.
     source_words = [
-        (((index + 1) * capture_words) - 1) // source_bins
+        source_start_word
+        + (((2 * index + 1) * source_window_words) // (2 * source_bins))
         for index in indices
     ]
     source_body = format_values(source_words)
@@ -114,7 +125,9 @@ def write_feature_indices(
         "#define BDT_SCORE_BITS 18\n"
         "#define BDT_SCORE_INTEGER_BITS 8\n"
         f"#define BDT_FEATURE_CAPTURE_WORDS {capture_words}\n"
-        f"#define BDT_FEATURE_SOURCE_BINS {source_bins}\n\n"
+        f"#define BDT_FEATURE_SOURCE_BINS {source_bins}\n"
+        f"#define BDT_FEATURE_SOURCE_START_WORD {source_start_word}\n"
+        f"#define BDT_FEATURE_SOURCE_WINDOW_WORDS {source_window_words}\n\n"
         "static const unsigned int BDT_FEATURE_INDEX[BDT_MODEL_INPUTS] = {\n"
         f"{body}\n"
         "};\n\n"
@@ -185,6 +198,23 @@ def main() -> int:
         help="Downsampled BDT source length. Default: 1250",
     )
     parser.add_argument(
+        "--source-start-word",
+        type=int,
+        default=0,
+        help=(
+            "First two-sample capture word in the BDT time window. "
+            "Default: 0"
+        ),
+    )
+    parser.add_argument(
+        "--source-window-words",
+        type=int,
+        help=(
+            "Number of two-sample words covered by the BDT time window. "
+            "Default: the remainder of the capture"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("src/vitis_adc_platform"),
@@ -195,12 +225,17 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     feature_indices = as_int_indices(load_npy(args.top_feat_idx))
+    source_window_words = args.source_window_words
+    if source_window_words is None:
+        source_window_words = args.capture_words - args.source_start_word
     feature_header = args.output_dir / "bdt_feature_indices.h"
     write_feature_indices(
         feature_header,
         feature_indices,
         args.capture_words,
         args.source_bins,
+        args.source_start_word,
+        source_window_words,
     )
     print(f"Wrote {feature_header} ({len(feature_indices)} indices)")
 
